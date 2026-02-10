@@ -309,163 +309,26 @@ async function logEventV2(
   }
 }
 
-// ============================================================
-// SUPABASE v1 (legacy - kept for backward compat during migration)
-// ============================================================
 
-async function logMessage(
-  role: "user" | "assistant",
-  content: string
-): Promise<void> {
-  if (!supabase) return;
-  try {
-    await supabase
-      .from("messages")
-      .insert({ role, content, channel: "telegram" });
-  } catch (e) {
-    console.error("Supabase log error:", e);
-  }
-}
-
-async function logEvent(
-  event: string,
-  message?: string,
-  metadata?: Record<string, unknown>
-): Promise<void> {
-  if (!supabase) return;
-  try {
-    await supabase
-      .from("logs")
-      .insert({ event, message, metadata: metadata || {} });
-  } catch (e) {
-    console.error("Supabase log event error:", e);
-  }
-}
-
-async function getMemoryContext(): Promise<string> {
-  if (!supabase) return "";
-
-  try {
-    const [factsResult, goalsResult, recentResult] = await Promise.all([
-      supabase
-        .from("memory")
-        .select("content")
-        .eq("type", "fact")
-        .order("created_at", { ascending: false })
-        .limit(20),
-      supabase
-        .from("memory")
-        .select("content, deadline")
-        .eq("type", "goal")
-        .order("priority", { ascending: false })
-        .limit(10),
-      supabase
-        .from("messages")
-        .select("role, content")
-        .order("created_at", { ascending: false })
-        .limit(6),
-    ]);
-
-    let context = "";
-
-    if (factsResult.data?.length) {
-      context += "\nPERSISTENT MEMORY:\n";
-      context += factsResult.data.map((f) => `- ${f.content}`).join("\n");
-    }
-
-    if (goalsResult.data?.length) {
-      context += "\n\nACTIVE GOALS:\n";
-      context += goalsResult.data
-        .map((g) => {
-          const dl = g.deadline ? ` (by ${g.deadline})` : "";
-          return `- ${g.content}${dl}`;
-        })
-        .join("\n");
-    }
-
-    if (recentResult.data?.length) {
-      context += "\n\nRECENT CONVERSATION:\n";
-      context += recentResult.data
-        .reverse()
-        .map((m) => `${m.role}: ${m.content.substring(0, 200)}`)
-        .join("\n");
-    }
-
-    return context;
-  } catch (e) {
-    console.error("Memory context error:", e);
-    return "";
-  }
-}
-
-async function processIntents(response: string): Promise<string> {
-  if (!supabase) return response;
-
+async function processIntents(response: string, threadDbId?: string): Promise<string> {
   let clean = response;
 
-  // [REMEMBER: fact to store]
-  const rememberMatches = response.matchAll(/\[REMEMBER:\s*(.+?)\]/gi);
-  for (const match of rememberMatches) {
-    await supabase
-      .from("memory")
-      .insert({ type: "fact", content: match[1].trim() });
+  // [LEARN: concise fact about the user]
+  const learnMatches = response.matchAll(/\[LEARN:\s*(.+?)\]/gi);
+  for (const match of learnMatches) {
+    const fact = match[1].trim();
+    await insertGlobalMemory(fact, threadDbId);
     clean = clean.replace(match[0], "");
-    console.log(`Remembered: ${match[1].trim()}`);
-  }
-
-  // [GOAL: goal text | DEADLINE: optional]
-  const goalMatches = response.matchAll(
-    /\[GOAL:\s*(.+?)(?:\s*\|\s*DEADLINE:\s*(.+?))?\]/gi
-  );
-  for (const match of goalMatches) {
-    const deadline = match[2] ? new Date(match[2]).toISOString() : null;
-    await supabase
-      .from("memory")
-      .insert({ type: "goal", content: match[1].trim(), deadline });
-    clean = clean.replace(match[0], "");
-    console.log(`Goal set: ${match[1].trim()}`);
-  }
-
-  // [DONE: search text for completed goal]
-  const doneMatches = response.matchAll(/\[DONE:\s*(.+?)\]/gi);
-  for (const match of doneMatches) {
-    const searchText = match[1].trim().toLowerCase();
-    const { data: goals } = await supabase
-      .from("memory")
-      .select("id, content")
-      .eq("type", "goal");
-
-    const goal = goals?.find((g) =>
-      g.content.toLowerCase().includes(searchText)
-    );
-    if (goal) {
-      await supabase
-        .from("memory")
-        .update({
-          type: "completed_goal",
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", goal.id);
-      console.log(`Completed goal: ${goal.content}`);
-    }
-    clean = clean.replace(match[0], "");
+    console.log(`Learned: ${fact}`);
   }
 
   // [FORGET: search text to remove a fact]
   const forgetMatches = response.matchAll(/\[FORGET:\s*(.+?)\]/gi);
   for (const match of forgetMatches) {
-    const searchText = match[1].trim().toLowerCase();
-    const { data: facts } = await supabase
-      .from("memory")
-      .select("id, content")
-      .eq("type", "fact");
-
-    const fact = facts?.find((f) =>
-      f.content.toLowerCase().includes(searchText)
-    );
-    if (fact) {
-      await supabase.from("memory").delete().eq("id", fact.id);
-      console.log(`Forgot: ${fact.content}`);
+    const searchText = match[1].trim();
+    const deleted = await deleteGlobalMemory(searchText);
+    if (deleted) {
+      console.log(`Forgot memory matching: ${searchText}`);
     }
     clean = clean.replace(match[0], "");
   }
@@ -777,6 +640,40 @@ async function callClaude(
 }
 
 // ============================================================
+// THREAD SUMMARY AUTO-GENERATION
+// ============================================================
+
+async function maybeUpdateThreadSummary(threadInfo: ThreadInfo): Promise<void> {
+  if (!threadInfo?.dbId) return;
+
+  // Only update summary every 5 exchanges
+  const newCount = await incrementThreadMessageCount(threadInfo.dbId);
+  if (newCount === 0 || newCount % 5 !== 0) return;
+
+  try {
+    const recentMessages = await getRecentThreadMessages(threadInfo.dbId, 10);
+    if (recentMessages.length < 3) return;
+
+    const messagesText = recentMessages
+      .map((m) => `${m.role}: ${m.content}`)
+      .join("\n");
+
+    const summaryPrompt = `Summarize this conversation thread concisely in 2-3 sentences. Focus on the main topics discussed and any decisions or outcomes. Do NOT include any tags like [LEARN:] or [FORGET:].
+
+${messagesText}`;
+
+    // Standalone call — no --resume, no thread session
+    const { text: summary } = await callClaude(summaryPrompt);
+    if (summary && !summary.startsWith("Error:")) {
+      await updateThreadSummary(threadInfo.dbId, summary);
+      console.log(`Thread summary updated (${threadInfo.dbId}): ${summary.substring(0, 80)}...`);
+    }
+  } catch (e) {
+    console.error("Thread summary generation error:", e);
+  }
+}
+
+// ============================================================
 // COMMANDS
 // ============================================================
 
@@ -809,24 +706,19 @@ bot.on("message:text", async (ctx) => {
 
   await ctx.replyWithChatAction("typing");
 
-  await logMessage("user", text);
-
-  const enrichedPrompt = await buildPrompt(text);
+  const enrichedPrompt = await buildPrompt(text, ctx.threadInfo);
   const { text: rawResponse } = await callClaude(enrichedPrompt, ctx.threadInfo);
-  const response = await processIntents(rawResponse);
+  const response = await processIntents(rawResponse, ctx.threadInfo?.dbId);
 
   // Check if Claude included [VOICE_REPLY] tag
   const wantsVoice = /\[VOICE_REPLY\]/i.test(response);
   const cleanResponse = response.replace(/\[VOICE_REPLY\]/gi, "").trim();
 
-  await logMessage("assistant", cleanResponse);
-  await logEvent("message", text.substring(0, 100));
-
   // V2 thread-aware logging
   if (ctx.threadInfo) {
     await insertThreadMessage(ctx.threadInfo.dbId, "user", text);
     await insertThreadMessage(ctx.threadInfo.dbId, "assistant", cleanResponse);
-    await incrementThreadMessageCount(ctx.threadInfo.dbId);
+    await maybeUpdateThreadSummary(ctx.threadInfo);
     await logEventV2("message", text.substring(0, 100), {}, ctx.threadInfo.dbId);
   }
 
@@ -863,20 +755,15 @@ bot.on("message:voice", async (ctx) => {
 
     console.log(`Transcription: ${transcription.substring(0, 80)}...`);
 
-    await logMessage("user", `[Voice]: ${transcription}`);
-
-    const enrichedPrompt = await buildPrompt(transcription);
+    const enrichedPrompt = await buildPrompt(transcription, ctx.threadInfo);
     const { text: rawResponse } = await callClaude(enrichedPrompt, ctx.threadInfo);
-    const claudeResponse = await processIntents(rawResponse);
-
-    await logMessage("assistant", claudeResponse);
-    await logEvent("voice_message", transcription.substring(0, 100));
+    const claudeResponse = await processIntents(rawResponse, ctx.threadInfo?.dbId);
 
     // V2 thread-aware logging
     if (ctx.threadInfo) {
       await insertThreadMessage(ctx.threadInfo.dbId, "user", `[Voice]: ${transcription}`);
       await insertThreadMessage(ctx.threadInfo.dbId, "assistant", claudeResponse);
-      await incrementThreadMessageCount(ctx.threadInfo.dbId);
+      await maybeUpdateThreadSummary(ctx.threadInfo);
       await logEventV2("voice_message", transcription.substring(0, 100), {}, ctx.threadInfo.dbId);
     }
 
@@ -918,22 +805,17 @@ bot.on("message:photo", async (ctx) => {
     await writeFile(filePath, Buffer.from(buffer));
 
     const caption = ctx.message.caption || "Analyze this image.";
-    const prompt = `[Image: ${filePath}]\n\n${caption}`;
-
-    await logMessage("user", `[Image] ${caption}`);
-
-    const { text: rawResponse } = await callClaude(prompt, ctx.threadInfo);
-    const claudeResponse = await processIntents(rawResponse);
+    const enrichedPrompt = await buildPrompt(`[Image: ${filePath}]\n\n${caption}`, ctx.threadInfo);
+    const { text: rawResponse } = await callClaude(enrichedPrompt, ctx.threadInfo);
+    const claudeResponse = await processIntents(rawResponse, ctx.threadInfo?.dbId);
 
     await unlink(filePath).catch(() => {});
-
-    await logMessage("assistant", claudeResponse);
 
     // V2 thread-aware logging
     if (ctx.threadInfo) {
       await insertThreadMessage(ctx.threadInfo.dbId, "user", `[Image] ${caption}`);
       await insertThreadMessage(ctx.threadInfo.dbId, "assistant", claudeResponse);
-      await incrementThreadMessageCount(ctx.threadInfo.dbId);
+      await maybeUpdateThreadSummary(ctx.threadInfo);
       await logEventV2("photo_message", caption.substring(0, 100), {}, ctx.threadInfo.dbId);
     }
 
@@ -963,22 +845,17 @@ bot.on("message:document", async (ctx) => {
     await writeFile(filePath, Buffer.from(buffer));
 
     const caption = ctx.message.caption || `Analyze: ${doc.file_name}`;
-    const prompt = `[File: ${filePath}]\n\n${caption}`;
-
-    await logMessage("user", `[File: ${doc.file_name}] ${caption}`);
-
-    const { text: rawResponse } = await callClaude(prompt, ctx.threadInfo);
-    const claudeResponse = await processIntents(rawResponse);
+    const enrichedPrompt = await buildPrompt(`[File: ${filePath}]\n\n${caption}`, ctx.threadInfo);
+    const { text: rawResponse } = await callClaude(enrichedPrompt, ctx.threadInfo);
+    const claudeResponse = await processIntents(rawResponse, ctx.threadInfo?.dbId);
 
     await unlink(filePath).catch(() => {});
-
-    await logMessage("assistant", claudeResponse);
 
     // V2 thread-aware logging
     if (ctx.threadInfo) {
       await insertThreadMessage(ctx.threadInfo.dbId, "user", `[File: ${doc.file_name}] ${caption}`);
       await insertThreadMessage(ctx.threadInfo.dbId, "assistant", claudeResponse);
-      await incrementThreadMessageCount(ctx.threadInfo.dbId);
+      await maybeUpdateThreadSummary(ctx.threadInfo);
       await logEventV2("document_message", `${doc.file_name}`.substring(0, 100), {}, ctx.threadInfo.dbId);
     }
 
@@ -993,7 +870,7 @@ bot.on("message:document", async (ctx) => {
 // HELPERS
 // ============================================================
 
-async function buildPrompt(userMessage: string): Promise<string> {
+async function buildPrompt(userMessage: string, threadInfo?: ThreadInfo): Promise<string> {
   const now = new Date();
   const timeStr = now.toLocaleString("en-US", {
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -1005,26 +882,56 @@ async function buildPrompt(userMessage: string): Promise<string> {
     minute: "2-digit",
   });
 
-  const memoryContext = await getMemoryContext();
+  // Layer 1: Soul (personality)
+  const soul = await getActiveSoul();
 
-  return `
-You are responding via Telegram. Keep responses concise.
+  // Layer 2: Global memory (cross-thread learned facts)
+  const globalMemory = await getGlobalMemory();
 
-Current time: ${timeStr}
-${memoryContext}
+  // Layer 3: Thread context (summary + recent messages as fallback)
+  let threadContext = "";
+  if (threadInfo?.dbId) {
+    if (threadInfo.summary) {
+      threadContext += `\nTHREAD SUMMARY:\n${threadInfo.summary}\n`;
+    }
+    const recentMessages = await getRecentThreadMessages(threadInfo.dbId, 5);
+    if (recentMessages.length > 0) {
+      threadContext += "\nRECENT MESSAGES (this thread):\n";
+      threadContext += recentMessages
+        .map((m) => `${m.role}: ${m.content}`)
+        .join("\n");
+    }
+  }
 
-MEMORY MANAGEMENT:
-When the user mentions something to remember, goals, or completions,
-include these tags in your response (they will be processed and removed automatically):
+  let prompt = `${soul}\n\nCurrent time: ${timeStr}`;
 
-[REMEMBER: fact to store]
-[GOAL: goal text | DEADLINE: optional date]
-[DONE: search text for completed goal]
-[FORGET: search text to remove a fact]
-[VOICE_REPLY] - include this tag if the user explicitly asks for a voice/audio reply
+  if (globalMemory.length > 0) {
+    prompt += "\n\nTHINGS I KNOW ABOUT THE USER:\n";
+    prompt += globalMemory.map((m) => `- ${m}`).join("\n");
+  }
 
-User: ${userMessage}
-`.trim();
+  if (threadContext) {
+    prompt += threadContext;
+  }
+
+  prompt += `
+
+MEMORY INSTRUCTIONS:
+You can automatically learn and remember facts about the user. When you notice something worth remembering (preferences, name, job, habits, important dates, etc.), include this tag in your response — it will be saved and removed before delivery:
+
+[LEARN: concise fact about the user]
+
+Keep learned facts very concise (under 15 words each). Only learn genuinely useful things.
+
+To remove an outdated or wrong fact:
+[FORGET: search text matching the fact to remove]
+
+To trigger a voice reply:
+[VOICE_REPLY]
+
+User: ${userMessage}`;
+
+  return prompt.trim();
 }
 
 async function sendResponse(ctx: CustomContext, response: string): Promise<void> {
@@ -1070,7 +977,7 @@ console.log(`Voice transcription: mlx_whisper`);
 console.log(`Voice responses (TTS): ${ELEVENLABS_API_KEY ? "ElevenLabs v3" : "disabled"}`);
 console.log("Thread support: enabled (Grammy auto-thread)");
 
-await logEvent("bot_started", "Relay started");
+await logEventV2("bot_started", "Relay started");
 
 bot.start({
   onStart: () => {
