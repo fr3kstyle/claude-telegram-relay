@@ -95,12 +95,19 @@ ALTER TABLE global_memory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bot_soul ENABLE ROW LEVEL SECURITY;
 ALTER TABLE logs_v2 ENABLE ROW LEVEL SECURITY;
 
--- Allow all for service role (bot uses service key)
-CREATE POLICY "service_all" ON threads FOR ALL USING (true);
-CREATE POLICY "service_all" ON thread_messages FOR ALL USING (true);
-CREATE POLICY "service_all" ON global_memory FOR ALL USING (true);
-CREATE POLICY "service_all" ON bot_soul FOR ALL USING (true);
-CREATE POLICY "service_all" ON logs_v2 FOR ALL USING (true);
+-- Allow all for service role ONLY (bot uses service key)
+-- IMPORTANT: These policies restrict anon access. Only the service_role
+-- (used by the relay via SUPABASE_SERVICE_KEY) can access data.
+CREATE POLICY "service_role_all" ON threads FOR ALL
+  TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "service_role_all" ON thread_messages FOR ALL
+  TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "service_role_all" ON global_memory FOR ALL
+  TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "service_role_all" ON bot_soul FOR ALL
+  TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "service_role_all" ON logs_v2 FOR ALL
+  TO service_role USING (true) WITH CHECK (true);
 
 -- ============================================================
 -- HELPER FUNCTIONS
@@ -147,6 +154,20 @@ BEGIN
   WHERE tm.thread_id = p_thread_id
   ORDER BY tm.created_at DESC
   LIMIT p_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Atomic increment for message count (avoids TOCTOU race)
+CREATE OR REPLACE FUNCTION increment_thread_message_count(p_thread_id UUID)
+RETURNS INTEGER AS $$
+DECLARE
+  v_count INTEGER;
+BEGIN
+  UPDATE threads
+  SET message_count = message_count + 1
+  WHERE id = p_thread_id
+  RETURNING message_count INTO v_count;
+  RETURN COALESCE(v_count, 0);
 END;
 $$ LANGUAGE plpgsql;
 

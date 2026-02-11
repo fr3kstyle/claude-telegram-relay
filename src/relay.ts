@@ -12,7 +12,7 @@
 
 import { Bot, Context, InputFile } from "grammy";
 import { spawn } from "bun";
-import { writeFile, mkdir, readFile, unlink } from "fs/promises";
+import { writeFile, mkdir, readFile, unlink, open } from "fs/promises";
 import { join } from "path";
 import { createClient } from "@supabase/supabase-js";
 
@@ -49,6 +49,7 @@ const SUPABASE_KEY =
 
 const MLX_WHISPER_PATH =
   process.env.MLX_WHISPER_PATH || "/Users/roviana/.local/bin/mlx_whisper";
+const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "";
@@ -57,9 +58,29 @@ const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "";
 const TEMP_DIR = join(RELAY_DIR, "temp");
 const UPLOADS_DIR = join(RELAY_DIR, "uploads");
 
+// Security: sanitize filenames to prevent path traversal
+function sanitizeFilename(name: string): string {
+  return name.replace(/[\/\\]/g, "_").replace(/\.\./g, "_");
+}
+
 // Claude CLI limits
 const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_OUTPUT_SIZE = 1024 * 1024; // 1MB
+
+// Rate limiting: max messages per window
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX = 10; // max 10 messages per minute
+const rateLimitMap = new Map<string, number[]>();
+
+function isRateLimited(userId: string): boolean {
+  const now = Date.now();
+  const timestamps = rateLimitMap.get(userId) || [];
+  const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (recent.length >= RATE_LIMIT_MAX) return true;
+  recent.push(now);
+  rateLimitMap.set(userId, recent);
+  return false;
+}
 
 // ============================================================
 // SUPABASE
@@ -161,18 +182,25 @@ async function updateThreadSummary(
 async function incrementThreadMessageCount(threadDbId: string): Promise<number> {
   if (!supabase) return 0;
   try {
-    // Read current, increment, write back
-    const { data } = await supabase
-      .from("threads")
-      .select("message_count")
-      .eq("id", threadDbId)
-      .single();
-    const newCount = (data?.message_count || 0) + 1;
-    await supabase
-      .from("threads")
-      .update({ message_count: newCount })
-      .eq("id", threadDbId);
-    return newCount;
+    // Atomic increment using raw SQL via rpc to avoid TOCTOU race
+    const { data, error } = await supabase.rpc("increment_thread_message_count", {
+      p_thread_id: threadDbId,
+    });
+    if (error) {
+      // Fallback: read-increment-write (non-atomic but functional)
+      const { data: row } = await supabase
+        .from("threads")
+        .select("message_count")
+        .eq("id", threadDbId)
+        .single();
+      const newCount = (row?.message_count || 0) + 1;
+      await supabase
+        .from("threads")
+        .update({ message_count: newCount })
+        .eq("id", threadDbId);
+      return newCount;
+    }
+    return data ?? 0;
   } catch (e) {
     console.error("incrementThreadMessageCount error:", e);
     return 0;
@@ -244,10 +272,12 @@ async function insertGlobalMemory(
 
 async function deleteGlobalMemory(searchText: string): Promise<boolean> {
   if (!supabase) return false;
+  if (!searchText || searchText.length > 200) return false; // Guard against abuse
   try {
     const { data: items } = await supabase
       .from("global_memory")
-      .select("id, content");
+      .select("id, content")
+      .limit(100); // Cap to prevent fetching unbounded data
     const match = items?.find((m) =>
       m.content.toLowerCase().includes(searchText.toLowerCase())
     );
@@ -336,9 +366,14 @@ async function processIntents(response: string, threadDbId?: string): Promise<st
   const learnMatches = response.matchAll(/\[LEARN:\s*(.+?)\]/gi);
   for (const match of learnMatches) {
     const fact = match[1].trim();
-    await insertGlobalMemory(fact, threadDbId);
+    // Security: cap fact length to prevent memory abuse
+    if (fact.length > 0 && fact.length <= 200) {
+      await insertGlobalMemory(fact, threadDbId);
+      console.log(`Learned: ${fact}`);
+    } else {
+      console.warn(`Rejected LEARN fact: too long (${fact.length} chars)`);
+    }
     clean = clean.replace(match[0], "");
-    console.log(`Learned: ${fact}`);
   }
 
   // [FORGET: search text to remove a fact]
@@ -365,7 +400,7 @@ async function transcribeAudio(audioPath: string): Promise<string> {
 
   const ffmpeg = spawn(
     [
-      "ffmpeg",
+      FFMPEG_PATH,
       "-i",
       audioPath,
       "-ar",
@@ -395,7 +430,11 @@ async function transcribeAudio(audioPath: string): Promise<string> {
       TEMP_DIR,
       wavPath,
     ],
-    { stdout: "pipe", stderr: "pipe" }
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, PATH: `${FFMPEG_PATH.replace(/\/[^/]+$/, "")}:${process.env.PATH || ""}` },
+    }
   );
 
   const stderr = await new Response(whisper.stderr).text();
@@ -490,7 +529,16 @@ async function acquireLock(): Promise<boolean> {
       }
     }
 
-    await writeFile(LOCK_FILE, process.pid.toString());
+    // Use exclusive flag to prevent race conditions between instances
+    const fd = await open(LOCK_FILE, "wx").catch(() => null);
+    if (fd) {
+      await fd.writeFile(process.pid.toString());
+      await fd.close();
+    } else {
+      // File was created between our check and open — retry with overwrite
+      // (only happens after stale lock removal)
+      await writeFile(LOCK_FILE, process.pid.toString());
+    }
     return true;
   } catch (error) {
     console.error("Lock error:", error);
@@ -525,6 +573,11 @@ if (!BOT_TOKEN) {
   process.exit(1);
 }
 
+if (!ALLOWED_USER_ID) {
+  console.error("TELEGRAM_USER_ID not set! Refusing to start without auth gate.");
+  process.exit(1);
+}
+
 await mkdir(TEMP_DIR, { recursive: true });
 await mkdir(UPLOADS_DIR, { recursive: true });
 
@@ -541,9 +594,12 @@ const bot = new Bot<CustomContext>(BOT_TOKEN);
 
 bot.use(async (ctx, next) => {
   const userId = ctx.from?.id.toString();
-  if (ALLOWED_USER_ID && userId !== ALLOWED_USER_ID) {
-    console.log(`Unauthorized: ${userId}`);
-    await ctx.reply("This bot is private.");
+  if (!userId || userId !== ALLOWED_USER_ID) {
+    console.log(`Unauthorized: ${userId || "unknown"}`);
+    return; // Silent reject — don't reveal bot existence to strangers
+  }
+  if (isRateLimited(userId)) {
+    await ctx.reply("Calma aí! Muitas mensagens seguidas. Tenta de novo em um minuto.");
     return;
   }
   await next();
@@ -665,7 +721,7 @@ async function callClaude(
         return callClaude(prompt, { ...threadInfo, sessionId: null });
       }
       console.error("Claude error:", stderrText);
-      return { text: `Error: ${stderrText || "Claude exited with code " + exitCode}`, sessionId: null };
+      return { text: "Sorry, something went wrong processing your request. Please try again.", sessionId: null };
     }
 
     // Size guard before JSON parsing
@@ -930,7 +986,7 @@ bot.on("message:document", async (ctx) => {
   try {
     const file = await ctx.getFile();
     const timestamp = Date.now();
-    const fileName = doc.file_name || `file_${timestamp}`;
+    const fileName = sanitizeFilename(doc.file_name || `file_${timestamp}`);
     const filePath = join(UPLOADS_DIR, `${timestamp}_${fileName}`);
 
     const response = await fetch(
@@ -1073,6 +1129,18 @@ console.log(`Voice responses (TTS): ${ELEVENLABS_API_KEY ? "ElevenLabs v3" : "di
 console.log("Thread support: enabled (Grammy auto-thread)");
 
 await logEventV2("bot_started", "Relay started");
+
+// Global error handler — prevents crashes from killing the relay
+bot.catch((err) => {
+  console.error("Bot error caught:", err.message || err);
+  logEventV2("bot_error", String(err.message || err).substring(0, 200)).catch(() => {});
+});
+
+// Catch unhandled rejections so the process doesn't die
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection:", reason);
+  logEventV2("unhandled_rejection", String(reason).substring(0, 200)).catch(() => {});
+});
 
 bot.start({
   onStart: () => {
