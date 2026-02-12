@@ -54,6 +54,8 @@ const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "";
 
+const TELEGRAM_GROUP_ID = process.env.TELEGRAM_GROUP_ID || "";
+
 // Directories
 const TEMP_DIR = join(RELAY_DIR, "temp");
 const UPLOADS_DIR = join(RELAY_DIR, "uploads");
@@ -558,6 +560,17 @@ async function heartbeatTick(): Promise<void> {
       return;
     }
 
+    // Check active hours before proceeding
+    if (!isWithinActiveHours(config)) {
+      console.log(`Heartbeat: outside active hours (${config.active_hours_start}-${config.active_hours_end} ${config.timezone})`);
+      await logEventV2("heartbeat_skip", "Outside active hours", {
+        active_hours_start: config.active_hours_start,
+        active_hours_end: config.active_hours_end,
+        timezone: config.timezone,
+      });
+      return;
+    }
+
     console.log("Heartbeat: tick");
     await logEventV2("heartbeat_tick", "Heartbeat timer fired", {
       interval_minutes: config.interval_minutes,
@@ -652,6 +665,31 @@ async function readHeartbeatChecklist(): Promise<string> {
   } catch {
     return "";
   }
+}
+
+function isWithinActiveHours(config: HeartbeatConfig): boolean {
+  const tz = config.timezone || "America/Sao_Paulo";
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(new Date());
+  const hour = parseInt(parts.find((p) => p.type === "hour")?.value || "0");
+  const minute = parseInt(parts.find((p) => p.type === "minute")?.value || "0");
+  const currentMinutes = hour * 60 + minute;
+
+  const [startH, startM] = (config.active_hours_start || "08:00").split(":").map(Number);
+  const [endH, endM] = (config.active_hours_end || "22:00").split(":").map(Number);
+  const startMinutes = startH * 60 + startM;
+  const endMinutes = endH * 60 + endM;
+
+  if (startMinutes <= endMinutes) {
+    return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+  }
+  // Overnight range (e.g., 22:00-06:00)
+  return currentMinutes >= startMinutes || currentMinutes < endMinutes;
 }
 
 async function buildHeartbeatPrompt(checklist: string): Promise<string> {
