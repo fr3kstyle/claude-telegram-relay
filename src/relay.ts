@@ -545,6 +545,12 @@ async function disableCronJob(jobId: string): Promise<void> {
 // ============================================================
 
 async function heartbeatTick(): Promise<void> {
+  if (heartbeatRunning) {
+    console.log("Heartbeat: skipping (previous tick still running)");
+    return;
+  }
+
+  heartbeatRunning = true;
   try {
     const config = await getHeartbeatConfig();
     if (!config || !config.enabled) {
@@ -555,13 +561,66 @@ async function heartbeatTick(): Promise<void> {
     console.log("Heartbeat: tick");
     await logEventV2("heartbeat_tick", "Heartbeat timer fired", {
       interval_minutes: config.interval_minutes,
-      enabled: config.enabled,
     });
 
-    // Phase 7 will add: read HEARTBEAT.md, call Claude, handle HEARTBEAT_OK, send to Telegram
+    // Step 1: Read HEARTBEAT.md checklist
+    const checklist = await readHeartbeatChecklist();
+    if (!checklist) {
+      console.log("Heartbeat: no HEARTBEAT.md found, skipping");
+      await logEventV2("heartbeat_skip", "No HEARTBEAT.md file found");
+      return;
+    }
+
+    // Step 2: Build prompt and call Claude (standalone, no --resume)
+    const prompt = await buildHeartbeatPrompt(checklist);
+    const { text: rawResponse } = await callClaude(prompt);
+
+    if (!rawResponse || rawResponse.startsWith("Error:")) {
+      console.error("Heartbeat: Claude call failed:", rawResponse);
+      await logEventV2("heartbeat_error", rawResponse?.substring(0, 200) || "Empty response");
+      return;
+    }
+
+    // Step 3: Check for HEARTBEAT_OK — nothing to report
+    if (rawResponse.trim() === "HEARTBEAT_OK" || rawResponse.includes("HEARTBEAT_OK")) {
+      console.log("Heartbeat: HEARTBEAT_OK — nothing to report");
+      await logEventV2("heartbeat_ok", "Claude reported nothing noteworthy");
+      return;
+    }
+
+    // Step 4: Process intents ([LEARN:], [FORGET:])
+    const cleanResponse = await processIntents(rawResponse);
+
+    // Strip [VOICE_REPLY] tag if Claude included it despite instructions
+    const finalMessage = cleanResponse.replace(/\[VOICE_REPLY\]/gi, "").trim();
+
+    if (!finalMessage) {
+      console.log("Heartbeat: empty after processing intents");
+      return;
+    }
+
+    // Step 5: Check deduplication — suppress identical messages within 24h
+    const isDuplicate = await isHeartbeatDuplicate(finalMessage);
+    if (isDuplicate) {
+      console.log("Heartbeat: duplicate message suppressed (seen in last 24h)");
+      await logEventV2("heartbeat_dedup", "Duplicate message suppressed", {
+        message_preview: finalMessage.substring(0, 100),
+      });
+      return;
+    }
+
+    // Step 6: Deliver to Telegram
+    await sendHeartbeatToTelegram(finalMessage);
+    console.log(`Heartbeat: delivered (${finalMessage.length} chars)`);
+    await logEventV2("heartbeat_delivered", "Heartbeat message sent to user", {
+      message_text: finalMessage.trim(),
+      message_length: finalMessage.length,
+    });
   } catch (e) {
     console.error("Heartbeat tick error:", e);
     await logEventV2("heartbeat_error", String(e).substring(0, 200));
+  } finally {
+    heartbeatRunning = false;
   }
 }
 
