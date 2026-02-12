@@ -28,6 +28,10 @@ bun run setup:services # Configure external services (Groq, ElevenLabs)
 - `/new` — Reset the Claude session for the current thread (fresh conversation)
 - `/memory` — Show all learned facts about the user
 
+**Heartbeat:**
+- `HEARTBEAT.md` — Checklist file in project root; Claude reads it on each heartbeat cycle and reports noteworthy items
+- `HEARTBEAT_OK` — When Claude responds with this token, the heartbeat message is suppressed (nothing to report)
+
 **Daemon management (macOS LaunchAgent):**
 ```bash
 launchctl load ~/Library/LaunchAgents/com.claude-telegram-relay.plist
@@ -61,10 +65,10 @@ tail -f ~/.claude-relay/relay-error.log
   - `[LEARN: fact]` → inserts into `global_memory` table
   - `[FORGET: search text]` → deletes matching fact from `global_memory`
   - `[VOICE_REPLY]` → triggers ElevenLabs TTS for the response
-- **Heartbeat & cron events** — Logged to `logs_v2` with event types: `heartbeat_tick`, `heartbeat_error`, `cron_executed`, `cron_error`, `bot_stopping`
+- **Heartbeat & cron events** — Logged to `logs_v2` with event types: `heartbeat_tick`, `heartbeat_ok`, `heartbeat_delivered`, `heartbeat_dedup`, `heartbeat_skip`, `heartbeat_error`, `cron_executed`, `cron_error`, `bot_stopping`
 - **Thread routing middleware** — Extracts `message_thread_id`, creates/finds thread in Supabase, attaches `threadInfo` to context
 - **callClaude()** — Spawns `claude -p "<prompt>" --resume <sessionId> --output-format json --dangerously-skip-permissions`. Parses JSON for response text and session ID. Auto-retries without `--resume` if session is expired/corrupt. 5-minute timeout.
-- **Heartbeat timer** — `heartbeatTick()` fires at configurable interval (default 60min), reads config from Supabase, logs events. Starts on boot via `onStart`, stops on SIGINT/SIGTERM.
+- **Heartbeat timer** — `heartbeatTick()` fires at configurable interval (default 60min), reads `HEARTBEAT.md` checklist, calls Claude, handles suppression (HEARTBEAT_OK + dedup), delivers to Telegram DM. Starts on boot via `onStart`, stops on SIGINT/SIGTERM.
 - **Thread summary generation** — `maybeUpdateThreadSummary()` triggers every 5 exchanges, makes a standalone Claude call to summarize the conversation
 - **Voice transcription** — `transcribeAudio()` converts .oga→.wav via ffmpeg, then sends to Groq Whisper API (auto-detects language)
 - **Text-to-speech** — `textToSpeech()` calls ElevenLabs v3 API, outputs opus format. Max 4500 chars per request.
