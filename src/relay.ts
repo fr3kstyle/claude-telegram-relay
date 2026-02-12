@@ -12,8 +12,8 @@
 
 import { Bot, Context, InputFile } from "grammy";
 import { spawn } from "bun";
-import { writeFile, mkdir, readFile, unlink, open } from "fs/promises";
-import { join } from "path";
+import { writeFile, mkdir, readFile, unlink, open, readdir } from "fs/promises";
+import { join, basename } from "path";
 import { createClient } from "@supabase/supabase-js";
 
 // ============================================================
@@ -64,8 +64,49 @@ function sanitizeFilename(name: string): string {
 }
 
 // Claude CLI limits
-const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const CLAUDE_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 min of no output = stuck
 const MAX_OUTPUT_SIZE = 1024 * 1024; // 1MB
+
+// Kill orphaned child processes left behind after Claude CLI timeout.
+// Finds processes whose parent was the killed Claude process (now reparented to PID 1)
+// and matches common patterns from skills/tools that Claude spawns.
+async function killOrphanedProcesses(claudePid: number): Promise<void> {
+  try {
+    // Find child processes that were spawned by the Claude process.
+    // After killing Claude, children get reparented to PID 1 (launchd on macOS).
+    // We look for python/node/bun processes started from .claude/skills or similar paths
+    // that are now orphaned (PPID=1) and started around the same time.
+    const result = Bun.spawnSync(["bash", "-c",
+      `ps -eo pid,ppid,lstart,command | grep -E '(scripts/(sheets|gcal|gmail|auth|gdrive|gchat|gslides|gdocs)\\.py|.claude/skills/)' | grep -v grep`
+    ]);
+    const output = new TextDecoder().decode(result.stdout).trim();
+    if (!output) return;
+
+    const pidsToKill: number[] = [];
+    for (const line of output.split("\n")) {
+      const match = line.trim().match(/^(\d+)/);
+      if (match) {
+        const pid = parseInt(match[1]);
+        if (pid !== process.pid) pidsToKill.push(pid);
+      }
+    }
+
+    for (const pid of pidsToKill) {
+      try {
+        process.kill(pid, "SIGTERM");
+        console.log(`Killed orphaned process ${pid}`);
+      } catch {
+        // Process already exited — ignore
+      }
+    }
+
+    if (pidsToKill.length > 0) {
+      console.log(`Cleaned up ${pidsToKill.length} orphaned process(es) after timeout`);
+    }
+  } catch {
+    // Best-effort cleanup — don't let this break the flow
+  }
+}
 
 // Rate limiting: max messages per window
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
@@ -81,6 +122,64 @@ function isRateLimited(userId: string): boolean {
   rateLimitMap.set(userId, recent);
   return false;
 }
+
+// ============================================================
+// SKILL REGISTRY (auto-generated at startup)
+// ============================================================
+
+const SKILLS_DIR = join(process.env.HOME || "~", ".claude", "skills");
+
+async function buildSkillRegistry(): Promise<string> {
+  try {
+    const entries = await readdir(SKILLS_DIR, { withFileTypes: true });
+    const skills: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const skillPath = join(SKILLS_DIR, entry.name, "SKILL.md");
+      let content: string;
+      try {
+        content = await readFile(skillPath, "utf-8");
+      } catch {
+        continue; // No SKILL.md — skip
+      }
+
+      // Extract description from YAML frontmatter or first heading
+      let description = "";
+      const yamlMatch = content.match(/^---\n[\s\S]*?description:\s*\|?\s*\n?\s*(.+?)(?:\n\s{2,}\S|\n[a-z]|\n---)/m);
+      if (yamlMatch) {
+        description = yamlMatch[1].trim();
+      } else {
+        const inlineMatch = content.match(/description:\s*"?([^"\n]+)"?/);
+        if (inlineMatch) {
+          description = inlineMatch[1].trim();
+        }
+      }
+
+      // Fallback: use first non-heading, non-empty line
+      if (!description) {
+        const lines = content.split("\n").filter(l => l.trim() && !l.startsWith("#") && !l.startsWith("---"));
+        description = lines[0]?.trim() || entry.name;
+      }
+
+      // Strip leftover YAML quotes and cap at first sentence for brevity
+      description = description.replace(/^["']|["']$/g, "");
+      const firstSentence = description.match(/^[^.!]+[.!]/)?.[0] || description;
+      skills.push(`- ${entry.name}: ${firstSentence}`);
+    }
+
+    if (skills.length === 0) return "";
+    return `AVAILABLE SKILLS (read the full SKILL.md in ~/.claude/skills/<name>/ before using):\n${skills.join("\n")}`;
+  } catch {
+    return "";
+  }
+}
+
+// Loaded once at startup, reused in every prompt
+let skillRegistry = "";
+
+// Heartbeat timer — started after bot.start(), cleared on shutdown
+let heartbeatTimer: Timer | null = null;
 
 // ============================================================
 // SUPABASE
@@ -359,6 +458,130 @@ async function logEventV2(
 }
 
 
+// ============================================================
+// SUPABASE v2.1: Heartbeat & Cron helpers
+// ============================================================
+
+interface HeartbeatConfig {
+  id: string;
+  interval_minutes: number;
+  active_hours_start: string;
+  active_hours_end: string;
+  timezone: string;
+  enabled: boolean;
+}
+
+interface CronJob {
+  id: string;
+  name: string;
+  schedule: string;
+  schedule_type: 'cron' | 'interval' | 'once';
+  prompt: string;
+  target_thread_id: string | null;
+  enabled: boolean;
+  source: 'user' | 'agent';
+  last_run_at: string | null;
+  next_run_at: string | null;
+}
+
+async function getHeartbeatConfig(): Promise<HeartbeatConfig | null> {
+  if (!supabase) return null;
+  try {
+    const { data } = await supabase
+      .from("heartbeat_config")
+      .select("*")
+      .limit(1)
+      .single();
+    return data as HeartbeatConfig | null;
+  } catch (e) {
+    console.error("getHeartbeatConfig error:", e);
+    return null;
+  }
+}
+
+async function getEnabledCronJobs(): Promise<CronJob[]> {
+  if (!supabase) return [];
+  try {
+    const { data } = await supabase
+      .from("cron_jobs")
+      .select("*")
+      .eq("enabled", true)
+      .order("created_at", { ascending: true });
+    return (data || []) as CronJob[];
+  } catch (e) {
+    console.error("getEnabledCronJobs error:", e);
+    return [];
+  }
+}
+
+async function updateCronJobLastRun(jobId: string, nextRunAt?: string): Promise<void> {
+  if (!supabase) return;
+  try {
+    const update: Record<string, unknown> = {
+      last_run_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    if (nextRunAt) update.next_run_at = nextRunAt;
+    await supabase.from("cron_jobs").update(update).eq("id", jobId);
+  } catch (e) {
+    console.error("updateCronJobLastRun error:", e);
+  }
+}
+
+async function disableCronJob(jobId: string): Promise<void> {
+  if (!supabase) return;
+  try {
+    await supabase
+      .from("cron_jobs")
+      .update({ enabled: false, updated_at: new Date().toISOString() })
+      .eq("id", jobId);
+  } catch (e) {
+    console.error("disableCronJob error:", e);
+  }
+}
+
+// ============================================================
+// HEARTBEAT TIMER (Infrastructure — Phase 6)
+// ============================================================
+
+async function heartbeatTick(): Promise<void> {
+  try {
+    const config = await getHeartbeatConfig();
+    if (!config || !config.enabled) {
+      console.log("Heartbeat: disabled or no config");
+      return;
+    }
+
+    console.log("Heartbeat: tick");
+    await logEventV2("heartbeat_tick", "Heartbeat timer fired", {
+      interval_minutes: config.interval_minutes,
+      enabled: config.enabled,
+    });
+
+    // Phase 7 will add: read HEARTBEAT.md, call Claude, handle HEARTBEAT_OK, send to Telegram
+  } catch (e) {
+    console.error("Heartbeat tick error:", e);
+    await logEventV2("heartbeat_error", String(e).substring(0, 200));
+  }
+}
+
+function startHeartbeat(intervalMinutes: number): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+  }
+  const intervalMs = intervalMinutes * 60 * 1000;
+  heartbeatTimer = setInterval(heartbeatTick, intervalMs);
+  console.log(`Heartbeat: started (every ${intervalMinutes} min)`);
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+    console.log("Heartbeat: stopped");
+  }
+}
+
 async function processIntents(response: string, threadDbId?: string): Promise<string> {
   let clean = response;
 
@@ -545,10 +768,14 @@ process.on("exit", () => {
   } catch {}
 });
 process.on("SIGINT", async () => {
+  stopHeartbeat();
+  await logEventV2("bot_stopping", "Relay shutting down (SIGINT)");
   await releaseLock();
   process.exit(0);
 });
 process.on("SIGTERM", async () => {
+  stopHeartbeat();
+  await logEventV2("bot_stopping", "Relay shutting down (SIGTERM)");
   await releaseLock();
   process.exit(0);
 });
@@ -569,6 +796,10 @@ if (!ALLOWED_USER_ID) {
 
 await mkdir(TEMP_DIR, { recursive: true });
 await mkdir(UPLOADS_DIR, { recursive: true });
+
+// Build skill registry once at startup
+skillRegistry = await buildSkillRegistry();
+console.log(`Skill registry: ${skillRegistry ? skillRegistry.split("\n").length - 1 + " skills loaded" : "none found"}`);
 
 if (!(await acquireLock())) {
   console.error("Could not acquire lock. Another instance may be running.");
@@ -676,31 +907,60 @@ async function callClaude(
       env: { ...process.env },
     });
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => {
+    // Inactivity-based timeout: kill only if Claude goes silent for 5 min.
+    // Long-running tasks that produce output (tool calls, progress) stay alive.
+    let timedOut = false;
+    let inactivityTimer: Timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-proc.pid!, "SIGTERM");
+      } catch {
         proc.kill();
-        reject(new Error("Claude CLI timed out"));
-      }, CLAUDE_TIMEOUT_MS)
-    );
-
-    let output: string;
-    let stderrText: string;
-    let exitCode: number;
-    try {
-      [output, stderrText, exitCode] = await Promise.race([
-        Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
-          proc.exited,
-        ]),
-        timeoutPromise,
-      ]);
-    } catch (error: any) {
-      if (error.message?.includes("timed out")) {
-        console.error("Claude CLI timed out");
-        return { text: "Sorry, that request took too long. Please try a simpler query.", sessionId: null };
       }
-      throw error;
+    }, CLAUDE_INACTIVITY_TIMEOUT_MS);
+
+    const resetInactivityTimer = () => {
+      clearTimeout(inactivityTimer);
+      if (timedOut) return;
+      inactivityTimer = setTimeout(() => {
+        timedOut = true;
+        try {
+          process.kill(-proc.pid!, "SIGTERM");
+        } catch {
+          proc.kill();
+        }
+      }, CLAUDE_INACTIVITY_TIMEOUT_MS);
+    };
+
+    // Read stderr incrementally to detect activity and reset the timer
+    const stderrChunks: string[] = [];
+    const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    const stderrDrain = (async () => {
+      try {
+        while (true) {
+          const { done, value } = await stderrReader.read();
+          if (done) break;
+          stderrChunks.push(decoder.decode(value, { stream: true }));
+          resetInactivityTimer();
+        }
+      } catch {
+        // Stream closed — process ended
+      }
+    })();
+
+    // Read stdout fully (JSON output arrives at end)
+    let output = await new Response(proc.stdout).text();
+    await stderrDrain;
+    clearTimeout(inactivityTimer);
+    const stderrText = stderrChunks.join("");
+    const exitCode = await proc.exited;
+
+    if (timedOut) {
+      console.error("Claude CLI timed out (no activity for 5 minutes)");
+      // Clean up any orphaned child processes (skill scripts, auth flows, etc.)
+      await killOrphanedProcesses(proc.pid!);
+      return { text: "Sorry, Claude appears to be stuck (no activity for 5 minutes). Please try again.", sessionId: null };
     }
 
     if (exitCode !== 0) {
@@ -853,6 +1113,11 @@ bot.on("message:text", async (ctx) => {
   // Check if Claude included [VOICE_REPLY] tag
   const wantsVoice = /\[VOICE_REPLY\]/i.test(response);
   const cleanResponse = response.replace(/\[VOICE_REPLY\]/gi, "").trim();
+
+  if (!cleanResponse) {
+    await sendResponse(ctx, "Sorry, I wasn't able to process that request. Please try again.");
+    return;
+  }
 
   // V2 thread-aware logging
   if (ctx.threadInfo) {
@@ -1054,6 +1319,10 @@ async function buildPrompt(userMessage: string, threadInfo?: ThreadInfo): Promis
     prompt += threadContext;
   }
 
+  if (skillRegistry) {
+    prompt += `\n\n${skillRegistry}`;
+  }
+
   prompt += `
 
 MEMORY INSTRUCTIONS:
@@ -1074,16 +1343,77 @@ User: ${userMessage}`;
   return prompt.trim();
 }
 
-async function sendResponse(ctx: CustomContext, response: string): Promise<void> {
-  const MAX_LENGTH = 4000;
+// Convert Claude's Markdown output to Telegram-compatible HTML.
+// Handles: bold, italic, strikethrough, code blocks, inline code, links.
+// Escapes HTML entities first, then applies formatting conversions.
+function markdownToTelegramHtml(text: string): string {
+  // Step 1: Extract code blocks and inline code to protect them from other transformations
+  const codeBlocks: string[] = [];
+  const inlineCodes: string[] = [];
 
-  if (response.length <= MAX_LENGTH) {
-    await ctx.reply(response);
+  // Protect fenced code blocks (```lang\n...\n```)
+  let result = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const escaped = code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const langAttr = lang ? ` class="language-${lang}"` : "";
+    codeBlocks.push(`<pre><code${langAttr}>${escaped}</code></pre>`);
+    return `\x00CODEBLOCK${codeBlocks.length - 1}\x00`;
+  });
+
+  // Protect inline code (`...`)
+  result = result.replace(/`([^`\n]+)`/g, (_, code) => {
+    const escaped = code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    inlineCodes.push(`<code>${escaped}</code>`);
+    return `\x00INLINECODE${inlineCodes.length - 1}\x00`;
+  });
+
+  // Step 2: Escape HTML entities in remaining text
+  result = result.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Step 3: Convert markdown formatting to HTML
+  // Bold+italic (***text***)
+  result = result.replace(/\*\*\*(.+?)\*\*\*/g, "<b><i>$1</i></b>");
+  // Bold (**text**)
+  result = result.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  // Italic (*text*) — but not inside words like file*name
+  result = result.replace(/(?<!\w)\*([^\s*](?:[^*]*[^\s*])?)\*(?!\w)/g, "<i>$1</i>");
+  // Strikethrough (~~text~~)
+  result = result.replace(/~~(.+?)~~/g, "<s>$1</s>");
+  // Links [text](url)
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+  // Step 4: Restore protected code blocks and inline code
+  result = result.replace(/\x00CODEBLOCK(\d+)\x00/g, (_, i) => codeBlocks[parseInt(i)]);
+  result = result.replace(/\x00INLINECODE(\d+)\x00/g, (_, i) => inlineCodes[parseInt(i)]);
+
+  return result;
+}
+
+async function sendResponse(ctx: CustomContext, response: string): Promise<void> {
+  if (!response || response.trim().length === 0) {
+    console.warn("Empty response — skipping Telegram send");
+    return;
+  }
+
+  const MAX_LENGTH = 4000;
+  const html = markdownToTelegramHtml(response);
+
+  const sendChunk = async (chunk: string) => {
+    try {
+      await ctx.reply(chunk, { parse_mode: "HTML" });
+    } catch (err: any) {
+      // If HTML parsing fails, fall back to plain text
+      console.warn("HTML parse failed, falling back to plain text:", err.message);
+      await ctx.reply(response.length <= MAX_LENGTH ? response : chunk);
+    }
+  };
+
+  if (html.length <= MAX_LENGTH) {
+    await sendChunk(html);
     return;
   }
 
   const chunks = [];
-  let remaining = response;
+  let remaining = html;
 
   while (remaining.length > 0) {
     if (remaining.length <= MAX_LENGTH) {
@@ -1101,7 +1431,7 @@ async function sendResponse(ctx: CustomContext, response: string): Promise<void>
   }
 
   for (const chunk of chunks) {
-    await ctx.reply(chunk);
+    await sendChunk(chunk);
   }
 }
 
@@ -1117,6 +1447,7 @@ console.log(`Voice transcription: ${GROQ_API_KEY ? "Groq Whisper API" : "disable
 console.log(`Whisper model: ${GROQ_WHISPER_MODEL}`);
 console.log(`Voice responses (TTS): ${ELEVENLABS_API_KEY ? "ElevenLabs v3" : "disabled"}`);
 console.log("Thread support: enabled (Grammy auto-thread)");
+console.log(`Heartbeat: ${supabase ? "will start after boot" : "disabled (no Supabase)"}`);
 
 await logEventV2("bot_started", "Relay started");
 
@@ -1133,7 +1464,15 @@ process.on("unhandledRejection", (reason) => {
 });
 
 bot.start({
-  onStart: () => {
+  onStart: async () => {
     console.log("Bot is running!");
+
+    // Start heartbeat timer from Supabase config
+    const hbConfig = await getHeartbeatConfig();
+    if (hbConfig?.enabled) {
+      startHeartbeat(hbConfig.interval_minutes);
+    } else {
+      console.log("Heartbeat: disabled (no config or not enabled)");
+    }
   },
 });

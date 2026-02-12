@@ -3,11 +3,11 @@
 ## Current Position
 
 Phase: 6 - Schema & Infrastructure
-Plan: Not yet created
-Status: Ready to plan
-Last activity: 2026-02-12 -- Roadmap created for Milestone v1.1
+Plan: .planning/phases/6/PLAN.md
+Status: Complete
+Last activity: 2026-02-12 -- Phase 6 executed (all 5 prompts)
 
-**Progress:** [░░░░░░░░░░░░░░░░░░░░] 0/6 phases
+**Progress:** [███░░░░░░░░░░░░░░░░░] 1/6 phases
 
 ## Project Reference
 
@@ -22,7 +22,7 @@ See: .planning/PROJECT.md (updated 2026-02-12)
 - Phases: 6 total (Phase 6-11)
 - Requirements: 24 total
 - Coverage: 24/24 (100%)
-- Completed: 0/6 phases
+- Completed: 1/6 phases
 - Started: 2026-02-12
 
 **Milestone 1 (archived):**
@@ -56,15 +56,16 @@ See: .planning/PROJECT.md (updated 2026-02-12)
 
 ## Session Continuity
 
-**Next action:** Run `/gsd:plan-phase 6` to create execution plan for Schema & Infrastructure
+**Next action:** Run `/gsd:plan-phase 7` to plan Heartbeat Core (or Phase 9 Cron Engine in parallel)
 
 **Context for next session:**
-- Roadmap complete with 6 phases (6-11)
-- All 24 requirements mapped to phases
-- Dependencies identified: schema first, then heartbeat stack and cron stack in parallel
-- Success criteria defined for each phase (2-5 observable behaviors)
+- Phase 6 complete: cron_jobs + heartbeat_config tables created, migration applied to Supabase
+- Supabase helpers added to relay.ts (getHeartbeatConfig, getEnabledCronJobs, updateCronJobLastRun, disableCronJob)
+- Heartbeat timer skeleton wired into relay lifecycle (starts on boot, stops on shutdown)
+- Heartbeat & cron event logging via logEventV2()
+- Next phases: 7 (Heartbeat Core) and 9 (Cron Engine) can be planned/executed in parallel
 
 ---
 
 *Created: 2026-02-12*
-*Last updated: 2026-02-12 after roadmap creation*
+*Last updated: 2026-02-12 after Phase 6 execution*

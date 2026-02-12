@@ -15,6 +15,12 @@ Telegram App → Telegram Bot API → Relay (Bun/TypeScript) → claude CLI → 
 ```bash
 bun run start          # Run the relay
 bun run dev            # Run with hot-reload (--watch)
+bun run setup          # Interactive guided setup
+bun run setup:verify   # Verify all services are configured
+bun run test:telegram  # Test Telegram bot connection
+bun run test:supabase  # Test Supabase connection
+bun run setup:launchd  # Configure macOS LaunchAgent daemon
+bun run setup:services # Configure external services (Groq, ElevenLabs)
 ```
 
 **Bot commands (in Telegram):**
@@ -55,8 +61,10 @@ tail -f ~/.claude-relay/relay-error.log
   - `[LEARN: fact]` → inserts into `global_memory` table
   - `[FORGET: search text]` → deletes matching fact from `global_memory`
   - `[VOICE_REPLY]` → triggers ElevenLabs TTS for the response
+- **Heartbeat & cron events** — Logged to `logs_v2` with event types: `heartbeat_tick`, `heartbeat_error`, `cron_executed`, `cron_error`, `bot_stopping`
 - **Thread routing middleware** — Extracts `message_thread_id`, creates/finds thread in Supabase, attaches `threadInfo` to context
 - **callClaude()** — Spawns `claude -p "<prompt>" --resume <sessionId> --output-format json --dangerously-skip-permissions`. Parses JSON for response text and session ID. Auto-retries without `--resume` if session is expired/corrupt. 5-minute timeout.
+- **Heartbeat timer** — `heartbeatTick()` fires at configurable interval (default 60min), reads config from Supabase, logs events. Starts on boot via `onStart`, stops on SIGINT/SIGTERM.
 - **Thread summary generation** — `maybeUpdateThreadSummary()` triggers every 5 exchanges, makes a standalone Claude call to summarize the conversation
 - **Voice transcription** — `transcribeAudio()` converts .oga→.wav via ffmpeg, then sends to Groq Whisper API (auto-detects language)
 - **Text-to-speech** — `textToSpeech()` calls ElevenLabs v3 API, outputs opus format. Max 4500 chars per request.
@@ -65,7 +73,21 @@ tail -f ~/.claude-relay/relay-error.log
   - Text message in + `[VOICE_REPLY]` tag → voice + text
   - Text message in, no tag → text only
 
+**Security guards** (in middleware and helpers):
+- Auth gate: only `TELEGRAM_USER_ID` can interact; unauthorized users are silently rejected
+- Rate limiting: 10 messages per minute per user
+- Filename sanitization: prevents path traversal in uploaded documents
+- Output size cap: 1MB max before truncation of Claude CLI output
+- Fact length cap: LEARN facts capped at 200 chars, FORGET search capped at 200 chars
+
 **Message handlers**: Text, voice, photos, documents. Media is downloaded to `~/.claude-relay/uploads/`, file path passed to Claude, cleaned up after processing.
+
+**Setup scripts** (`setup/` directory) — Interactive configuration helpers, not part of the running relay:
+- `install.ts`: Guided first-time setup (checks deps, creates `.env`, runs tests)
+- `verify.ts`: Validates all required env vars and service connections
+- `test-telegram.ts`, `test-supabase.ts`: Individual service connection tests
+- `configure-launchd.ts`: Generates and loads the macOS LaunchAgent plist
+- `configure-services.ts`: Walks through Groq/ElevenLabs API key setup
 
 **Examples directory** — Reference patterns, not part of the running relay:
 - `morning-briefing.ts`: Cron-triggered daily summary
@@ -82,8 +104,13 @@ Tables used by the relay:
 - `global_memory` — Cross-thread learned facts (content, source thread)
 - `bot_soul` — Personality definitions (content, is_active)
 - `logs_v2` — Observability events (event, message, metadata, thread_id)
+- `cron_jobs` — Scheduled jobs (name, schedule, prompt, target thread, source)
+- `heartbeat_config` — Single-row heartbeat settings (interval, active hours, timezone, enabled)
 
-Migration: `supabase/migrations/20260210202924_schema_v2_threads_memory_soul.sql`
+Migrations:
+- `supabase/migrations/20260210202924_schema_v2_threads_memory_soul.sql` (v2: threads, memory, soul)
+- `supabase/migrations/20260212_heartbeat_cron_schema.sql` (v2.1: heartbeat config, cron jobs)
+
 Reference SQL: `examples/supabase-schema-v2.sql`
 
 ## Environment Variables
@@ -100,6 +127,7 @@ Paths:
 Groq (voice transcription):
 - `GROQ_API_KEY` — API key from console.groq.com
 - `GROQ_WHISPER_MODEL` — defaults to `whisper-large-v3-turbo`
+- `FFMPEG_PATH` — defaults to `/opt/homebrew/bin/ffmpeg`
 
 Supabase:
 - `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (or `SUPABASE_ANON_KEY`)
