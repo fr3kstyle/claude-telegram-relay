@@ -582,6 +582,128 @@ function stopHeartbeat(): void {
   }
 }
 
+// Guard: prevent overlapping heartbeat calls
+let heartbeatRunning = false;
+
+async function readHeartbeatChecklist(): Promise<string> {
+  if (!PROJECT_DIR) return "";
+  try {
+    const heartbeatPath = join(PROJECT_DIR, "HEARTBEAT.md");
+    return await readFile(heartbeatPath, "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+async function buildHeartbeatPrompt(checklist: string): Promise<string> {
+  const now = new Date();
+  const timeStr = now.toLocaleString("en-US", {
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const soul = await getActiveSoul();
+  const globalMemory = await getGlobalMemory();
+
+  let prompt = `${soul}\n\nCurrent time: ${timeStr}`;
+
+  if (globalMemory.length > 0) {
+    prompt += "\n\nTHINGS I KNOW ABOUT THE USER:\n";
+    prompt += globalMemory.map((m) => `- ${m}`).join("\n");
+  }
+
+  if (checklist) {
+    prompt += `\n\nHEARTBEAT CHECKLIST:\n${checklist}`;
+  }
+
+  prompt += `
+
+HEARTBEAT INSTRUCTIONS:
+You are performing a periodic check-in. Review the checklist above and check on the items listed.
+
+If everything is fine and there's nothing noteworthy to report, respond with ONLY:
+HEARTBEAT_OK
+
+If there IS something worth reporting (something changed, something needs attention, a reminder is due, etc.), write a concise message to the user about what you found. Keep it brief and actionable.
+
+You may use these tags in your response:
+[LEARN: concise fact about the user] — save a fact (under 15 words)
+[FORGET: search text matching the fact to remove] — remove a previously learned fact
+
+Do NOT use [VOICE_REPLY] in heartbeat responses.`;
+
+  return prompt.trim();
+}
+
+async function isHeartbeatDuplicate(message: string): Promise<boolean> {
+  if (!supabase) return false;
+  try {
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data } = await supabase
+      .from("logs_v2")
+      .select("metadata")
+      .eq("event", "heartbeat_delivered")
+      .gte("created_at", twentyFourHoursAgo)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (!data || data.length === 0) return false;
+
+    const trimmedMessage = message.trim();
+    return data.some(
+      (row) => (row.metadata as Record<string, unknown>)?.message_text === trimmedMessage
+    );
+  } catch (e) {
+    console.error("isHeartbeatDuplicate error:", e);
+    return false;
+  }
+}
+
+async function sendHeartbeatToTelegram(message: string): Promise<void> {
+  const chatId = parseInt(ALLOWED_USER_ID);
+  if (!chatId || isNaN(chatId)) {
+    console.error("Heartbeat: cannot send — TELEGRAM_USER_ID not set or invalid");
+    return;
+  }
+
+  const MAX_LENGTH = 4000;
+  const html = markdownToTelegramHtml(message);
+
+  const sendChunk = async (chunk: string) => {
+    try {
+      await bot.api.sendMessage(chatId, chunk, { parse_mode: "HTML" });
+    } catch (err: any) {
+      console.warn("Heartbeat HTML parse failed, falling back to plain text:", err.message);
+      await bot.api.sendMessage(chatId, message.length <= MAX_LENGTH ? message : chunk);
+    }
+  };
+
+  if (html.length <= MAX_LENGTH) {
+    await sendChunk(html);
+    return;
+  }
+
+  // Chunk long messages
+  let remaining = html;
+  while (remaining.length > 0) {
+    if (remaining.length <= MAX_LENGTH) {
+      await sendChunk(remaining);
+      break;
+    }
+    let splitIndex = remaining.lastIndexOf("\n\n", MAX_LENGTH);
+    if (splitIndex === -1) splitIndex = remaining.lastIndexOf("\n", MAX_LENGTH);
+    if (splitIndex === -1) splitIndex = remaining.lastIndexOf(" ", MAX_LENGTH);
+    if (splitIndex === -1) splitIndex = MAX_LENGTH;
+    await sendChunk(remaining.substring(0, splitIndex));
+    remaining = remaining.substring(splitIndex).trim();
+  }
+}
+
 async function processIntents(response: string, threadDbId?: string): Promise<string> {
   let clean = response;
 
