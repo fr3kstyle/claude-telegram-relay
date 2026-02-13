@@ -360,8 +360,8 @@ async function insertMemory(
   sourceThreadId?: string,
   deadline?: string | null,
   priority?: number
-): Promise<void> {
-  if (!supabase) return;
+): Promise<boolean> {
+  if (!supabase) return false;
   try {
     const row: Record<string, unknown> = {
       content,
@@ -379,28 +379,46 @@ async function insertMemory(
     if (priority !== undefined) {
       row.priority = priority;
     }
-    await supabase.from("global_memory").insert(row);
+    const { error } = await supabase.from("global_memory").insert(row);
+    if (error) {
+      console.error("insertMemory error:", error);
+      return false;
+    }
+    return true;
   } catch (e) {
     console.error("insertMemory error:", e);
+    return false;
   }
 }
 
 async function deleteMemory(searchText: string): Promise<boolean> {
-  if (!supabase) return false;
-  if (!searchText || searchText.length > 200) return false;
+  if (!supabase) {
+    console.warn("deleteMemory: no supabase client");
+    return false;
+  }
+  if (!searchText || searchText.length > 200) {
+    console.warn(`deleteMemory: invalid search text (length=${searchText?.length || 0})`);
+    return false;
+  }
   try {
-    const { data: items } = await supabase
+    const { data: items, error } = await supabase
       .from("global_memory")
-      .select("id, content")
-      .limit(100);
+      .select("id, content, type")
+      .in("type", ["fact", "goal", "preference"])
+      .limit(200);
+    if (error) {
+      console.error("deleteMemory query error:", error);
+      return false;
+    }
     const match = items?.find((m: { id: string; content: string }) =>
       m.content.toLowerCase().includes(searchText.toLowerCase())
     );
     if (match) {
       await supabase.from("global_memory").delete().eq("id", match.id);
-      console.log(`Forgot memory: ${match.content}`);
+      console.log(`Forgot memory [${(match as any).type}]: ${match.content}`);
       return true;
     }
+    console.warn(`deleteMemory: no match found for "${searchText}" (searched ${items?.length || 0} entries)`);
     return false;
   } catch (e) {
     console.error("deleteMemory error:", e);
@@ -1478,6 +1496,13 @@ async function sendHeartbeatToTelegram(message: string): Promise<void> {
 
 async function processIntents(response: string, threadDbId?: string): Promise<string> {
   let clean = response;
+  const failures: string[] = [];
+
+  // Log if any intent tags are detected at all
+  const hasIntents = /\[(REMEMBER|FORGET|GOAL|DONE|CRON|VOICE_REPLY)[:\]]/i.test(response);
+  if (hasIntents) {
+    console.log(`[Intents] Detected intent tags in response (${response.length} chars)`);
+  }
 
   // [REMEMBER: concise fact about the user]
   const rememberMatches = response.matchAll(/\[REMEMBER:\s*(.+?)\]/gi);
@@ -1485,10 +1510,16 @@ async function processIntents(response: string, threadDbId?: string): Promise<st
     const fact = match[1].trim();
     // Security: cap fact length to prevent memory abuse
     if (fact.length > 0 && fact.length <= 200) {
-      await insertMemory(fact, "fact", threadDbId);
-      console.log(`Remembered: ${fact}`);
+      const ok = await insertMemory(fact, "fact", threadDbId);
+      if (ok) {
+        console.log(`Remembered: ${fact}`);
+      } else {
+        console.warn(`[Intents] REMEMBER failed to insert: ${fact}`);
+        failures.push(`Failed to save: "${fact}"`);
+      }
     } else {
       console.warn(`Rejected REMEMBER fact: too long (${fact.length} chars)`);
+      failures.push(`Rejected fact (too long): "${fact.substring(0, 50)}..."`);
     }
     clean = clean.replace(match[0], "");
   }
@@ -1501,10 +1532,15 @@ async function processIntents(response: string, threadDbId?: string): Promise<st
     const goalText = match[1].trim();
     const deadline = match[2]?.trim() || null;
     if (goalText.length > 0 && goalText.length <= 200) {
-      await insertMemory(goalText, "goal", threadDbId, deadline);
-      console.log(
-        `Goal set: ${goalText}${deadline ? ` (deadline: ${deadline})` : ""}`
-      );
+      const ok = await insertMemory(goalText, "goal", threadDbId, deadline);
+      if (ok) {
+        console.log(
+          `Goal set: ${goalText}${deadline ? ` (deadline: ${deadline})` : ""}`
+        );
+      } else {
+        console.warn(`[Intents] GOAL failed to insert: ${goalText}`);
+        failures.push(`Failed to save goal: "${goalText}"`);
+      }
     } else if (goalText.length > 200) {
       console.warn(`Rejected GOAL: too long (${goalText.length} chars)`);
     }
@@ -1520,7 +1556,8 @@ async function processIntents(response: string, threadDbId?: string): Promise<st
       if (completed) {
         console.log(`Goal completed matching: ${searchText}`);
       } else {
-        console.warn(`No active goal found matching: ${searchText}`);
+        console.warn(`[Intents] DONE failed: no active goal matching "${searchText}"`);
+        failures.push(`No active goal found matching: "${searchText}"`);
       }
     }
     clean = clean.replace(match[0], "");
@@ -1533,6 +1570,9 @@ async function processIntents(response: string, threadDbId?: string): Promise<st
     const deleted = await deleteMemory(searchText);
     if (deleted) {
       console.log(`Forgot memory matching: ${searchText}`);
+    } else {
+      console.warn(`[Intents] FORGET failed: no match for "${searchText}"`);
+      failures.push(`Could not find memory matching: "${searchText}"`);
     }
     clean = clean.replace(match[0], "");
   }
@@ -1565,6 +1605,12 @@ async function processIntents(response: string, threadDbId?: string): Promise<st
       console.warn(`[Agent] Rejected CRON intent: schedule="${schedule}" prompt length=${prompt.length}`);
     }
     clean = clean.replace(match[0], "");
+  }
+
+  // Append failure notice so the user knows when memory ops silently failed
+  if (failures.length > 0) {
+    console.warn(`[Intents] ${failures.length} operation(s) failed:`, failures);
+    clean += `\n\n[Memory ops failed: ${failures.join("; ")}]`;
   }
 
   return clean.trim();
@@ -2044,8 +2090,25 @@ async function callClaude(
     let newSessionId: string | null = null;
     let buffer = "";
     let totalBytes = 0;
+    let lastAssistantText = ""; // Fallback: accumulate text from assistant events
+    const eventTypesSeen: string[] = [];
+    let jsonParseErrors = 0;
     const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
     const stdoutDecoder = new TextDecoder();
+
+    // Helper: extract text from a result event (handles multiple content block formats)
+    const extractResultText = (event: any): string | null => {
+      if (typeof event.result === "string") return event.result;
+      if (Array.isArray(event.result?.content)) {
+        // Find the first text block in content array (not necessarily [0])
+        for (const block of event.result.content) {
+          if (block.type === "text" && block.text) return block.text;
+        }
+      }
+      // Legacy: direct content[0].text without type check
+      if (event.result?.content?.[0]?.text) return event.result.content[0].text;
+      return null;
+    };
 
     try {
       while (true) {
@@ -2074,6 +2137,7 @@ async function callClaude(
 
           try {
             const event = JSON.parse(line);
+            eventTypesSeen.push(event.type || "unknown");
 
             // Extract session ID from init event (available immediately)
             if (event.type === "system" && event.subtype === "init" && event.session_id) {
@@ -2085,12 +2149,22 @@ async function callClaude(
               newSessionId = event.session_id;
             }
 
+            // Accumulate text from assistant events as fallback
+            if (event.type === "assistant" && event.message?.content) {
+              for (const block of event.message.content) {
+                if (block.type === "text" && block.text) {
+                  lastAssistantText = block.text;
+                }
+              }
+            }
+
             // Extract final result text from result event (always last)
             if (event.type === "result") {
-              if (typeof event.result === "string") {
-                resultText = event.result;
-              } else if (event.result?.content?.[0]?.text) {
-                resultText = event.result.content[0].text;
+              const extracted = extractResultText(event);
+              if (extracted) {
+                resultText = extracted;
+              } else {
+                console.warn(`[Stream] Result event present but text extraction failed. Keys: ${JSON.stringify(Object.keys(event.result || {}))}`);
               }
               // Result event also has session_id
               if (event.session_id) {
@@ -2100,7 +2174,7 @@ async function callClaude(
             // Fire callback for callers that want real-time event access
             onStreamEvent?.(event);
           } catch {
-            // Non-JSON line or partial data — skip silently
+            jsonParseErrors++;
           }
         }
       }
@@ -2112,20 +2186,25 @@ async function callClaude(
     if (buffer.trim()) {
       try {
         const event = JSON.parse(buffer);
+        eventTypesSeen.push(event.type || "unknown");
         if (event.type === "result") {
-          if (typeof event.result === "string") {
-            resultText = event.result;
-          } else if (event.result?.content?.[0]?.text) {
-            resultText = event.result.content[0].text;
-          }
+          const extracted = extractResultText(event);
+          if (extracted) resultText = extracted;
           if (event.session_id) newSessionId = event.session_id;
         } else if (event.session_id && !newSessionId) {
           newSessionId = event.session_id;
         }
+        if (event.type === "assistant" && event.message?.content) {
+          for (const block of event.message.content) {
+            if (block.type === "text" && block.text) {
+              lastAssistantText = block.text;
+            }
+          }
+        }
         resetInactivityTimer();
         onStreamEvent?.(event);
       } catch {
-        // Incomplete JSON at end — ignore
+        jsonParseErrors++;
       }
     }
 
@@ -2151,10 +2230,17 @@ async function callClaude(
       return { text: "Sorry, something went wrong processing your request. Please try again.", sessionId: null };
     }
 
-    // Fallback: if no result event was parsed, use raw stderr info
+    // Fallback: if no result event was parsed, try assistant text or log diagnostics
     if (!resultText) {
-      console.warn("No result event found in stream-json output");
-      resultText = "Sorry, I couldn't parse the response. Please try again.";
+      const evtSummary = eventTypesSeen.length > 0 ? eventTypesSeen.join(", ") : "none";
+      console.warn(`[Stream] No result event found. Events: [${evtSummary}], bytes: ${totalBytes}, JSON errors: ${jsonParseErrors}, buffer remainder: ${buffer.substring(0, 200)}`);
+      if (lastAssistantText) {
+        console.warn(`[Stream] Using fallback text from assistant event (${lastAssistantText.length} chars)`);
+        resultText = lastAssistantText;
+      } else {
+        console.error(`[Stream] No result AND no assistant text. Stream may have been empty or format changed.`);
+        resultText = `Something went wrong — Claude finished (exit 0) but produced no parseable text. Events seen: [${evtSummary}], stream bytes: ${totalBytes}. Check relay logs for details.`;
+      }
     }
 
     // Store session ID in Supabase for this thread
@@ -2750,14 +2836,17 @@ async function buildPrompt(userMessage: string, threadInfo?: ThreadInfo): Promis
   prompt += `
 
 MEMORY INSTRUCTIONS:
-You can automatically remember facts about the user. When you notice something worth remembering (preferences, name, job, habits, important dates, etc.), include this tag in your response — it will be saved and removed before delivery:
+The "THINGS I KNOW ABOUT THE USER" list above is stored in a database. The ONLY way to manage it is by including these tags in your response text. They will be parsed, executed against the database, and stripped before delivery. Do NOT use filesystem tools (Read/Edit/Write) to manage memory — those cannot modify the database.
 
+To save a new fact:
 [REMEMBER: concise fact about the user]
 
 Keep facts very concise (under 15 words each). Only remember genuinely useful things.
 
-To remove an outdated or wrong fact or memory:
+To remove an outdated or wrong fact or memory (search text must partially match the existing entry):
 [FORGET: search text matching the entry to remove]
+
+IMPORTANT: Always include these tags directly in your response text, never in tool calls. Multiple tags can appear in the same response. They are automatically removed before the user sees your message.
 
 GOALS:
 You can track goals for the user. When the user mentions a goal, objective, or something they want to achieve:
