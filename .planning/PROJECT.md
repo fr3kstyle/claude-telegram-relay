@@ -6,12 +6,12 @@
 
 **Tech Stack:** Bun runtime, TypeScript, Grammy (Telegram Bot), Supabase (PostgreSQL), Claude CLI, Groq Whisper, ElevenLabs TTS, croner (cron scheduling)
 
-**Architecture:** Single-file relay (`src/relay.ts` ~2,500 lines). Message flow: Telegram -> Grammy handler -> buildPrompt() -> callClaude() via Bun.spawn -> processIntents() -> response back to Telegram.
+**Architecture:** Single-file relay (`src/relay.ts` ~2,700 lines). Message flow: Telegram -> Grammy handler -> buildPrompt() -> callClaude() via Bun.spawn -> processIntents() -> response back to Telegram.
 
 ## Current State
 
-**Latest version:** v1.1 (shipped 2026-02-12)
-**Active milestone:** v1.2 — Streaming & Long-Running Task Resilience
+**Latest version:** v1.2 (shipped 2026-02-13)
+**Active milestone:** None
 
 **Shipped capabilities:**
 - Telegram group threads as parallel conversation channels
@@ -24,6 +24,8 @@
 - Intent system: [LEARN:], [FORGET:], [VOICE_REPLY], [CRON:]
 - Heartbeat system: periodic agent loop with HEARTBEAT.md checklist, smart suppression, active hours, dedicated thread
 - Cron system: 3 schedule types (cron/interval/once), Telegram commands, file sync, agent self-scheduling
+- Stream-json NDJSON parsing with activity-based 15-min inactivity timeout
+- Real-time typing indicators (4s interval) and tool-use progress messages (15s throttle)
 
 ## Out of Scope
 
@@ -55,8 +57,9 @@
 | Agent can self-schedule cron | Makes the assistant truly proactive (reminders, follow-ups) | Shipped v1.1 |
 | croner for cron expressions | Same library OpenClaw uses, 5-field cron + timezone support | Shipped v1.1 |
 | Both Telegram commands + file config for cron | Accessibility from phone + power user file editing | Shipped v1.1 |
-| stream-json over json output | Enables activity detection, progress feedback, and eliminates blind 5-min timeout | v1.2 |
-| 15-min inactivity timeout | Complex tasks (subagents, research) need more than 5 min between outputs | v1.2 |
+| stream-json over json output | Enables activity detection, progress feedback, and eliminates blind 5-min timeout | Shipped v1.2 |
+| 15-min inactivity timeout | Complex tasks (subagents, research) need more than 5 min between outputs | Shipped v1.2 |
+| Liveness reporter pattern | Factory + callback decouples typing/progress from callClaude internals | Shipped v1.2 |
 
 ---
 
@@ -76,10 +79,11 @@
 
 ### Milestone 1.2: Streaming & Long-Running Task Resilience
 **Goal:** Make the relay robust for complex, long-running Claude CLI tasks.
-**Status:** In Progress (2 phases, started 2026-02-13)
-**Scope:** Stream-json output, activity-based timeout, typing indicators, progress messages
+**Status:** Complete (2 phases, shipped 2026-02-13)
+**Delivered:** Stream-json NDJSON parsing, activity-based timeout, typing indicators, tool-use progress
+**Archive:** [Roadmap](milestones/v1.2-ROADMAP.md) | [Requirements](milestones/v1.2-REQUIREMENTS.md)
 
 </details>
 
 ---
-*Last updated: 2026-02-13 — Milestone v1.2 started*
+*Last updated: 2026-02-13 — Milestone v1.2 complete*
