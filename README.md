@@ -10,7 +10,10 @@ This relay connects Telegram to the Claude Code CLI. Every message spawns a Clau
 You (Telegram) ──> Grammy Bot ──> Claude Code CLI ──> Tools, Web, Files
                         │                                     │
                    Supabase ◄─────────── Memory ◄─────────────┘
-              (threads, facts, soul, logs, cron)
+              (threads, facts, goals, soul, logs, cron)
+                        │
+                  Edge Functions
+              (embeddings, semantic search)
 ```
 
 ---
@@ -19,7 +22,7 @@ You (Telegram) ──> Grammy Bot ──> Claude Code CLI ──> Tools, Web, Fi
 
 **Conversations**
 - Threaded sessions — each Telegram forum topic or DM gets its own Claude session with `--resume`
-- Three-layer memory: personality (soul), cross-thread facts (global memory), per-thread context (summary + recent messages)
+- Four-layer memory: personality (soul), cross-thread typed memory (facts + goals), semantic search (vector embeddings), per-thread context (summary + recent messages)
 - Auto-generated thread summaries every 5 exchanges
 - Runs with `--dangerously-skip-permissions`, so Claude has the same access as your terminal
 
@@ -45,15 +48,17 @@ You (Telegram) ──> Grammy Bot ──> Claude Code CLI ──> Tools, Web, Fi
 - Progress message is edited in-place and deleted when done
 
 **Intent System**
-- `[LEARN: fact]` — Claude saves a cross-thread fact about you
+- `[REMEMBER: fact]` — Claude saves a cross-thread fact about you
 - `[FORGET: text]` — Claude removes a previously learned fact
+- `[GOAL: text]` or `[GOAL: text | DEADLINE: YYYY-MM-DD]` — Claude tracks a goal for you
+- `[DONE: text]` — Claude marks a goal as completed
 - `[VOICE_REPLY]` — Claude responds with TTS audio
 - `[CRON: schedule | prompt]` — Claude schedules a future task
 
 **Bot Commands**
 - `/soul <text>` — set the bot's personality (loaded into every prompt)
 - `/new` — reset the Claude session for the current thread
-- `/memory` — show all learned facts
+- `/memory` — show learned facts and active goals
 - `/cron list|add|remove|enable|disable` — manage scheduled jobs
 
 **Always On**
@@ -165,7 +170,7 @@ The relay uses Supabase for all persistent state. Run the schema in your Supabas
 |-------|---------|
 | `threads` | Conversation channels (one per Telegram topic/DM) |
 | `thread_messages` | Per-thread message history |
-| `global_memory` | Cross-thread facts learned by Claude |
+| `global_memory` | Cross-thread typed memory (facts, goals, preferences) with vector embeddings |
 | `bot_soul` | Bot personality (set via `/soul` command) |
 | `logs_v2` | Observability events |
 | `cron_jobs` | Scheduled jobs (cron, interval, one-shot) |
@@ -308,7 +313,7 @@ bun run setup:services     # Configure external services (Groq, ElevenLabs)
 
 ## Architecture
 
-The whole thing is one file: `src/relay.ts` (~2,700 lines). Message handlers, memory, Claude CLI integration, heartbeat, cron, voice, intents.
+The whole thing is one file: `src/relay.ts` (~2,900 lines). Message handlers, memory, Claude CLI integration, heartbeat, cron, voice, intents, skill registry.
 
 ```
 Incoming message → Thread routing → buildPrompt() → callClaude() → processIntents() → Send response
@@ -319,11 +324,11 @@ Incoming message → Thread routing → buildPrompt() → callClaude() → proce
 
 `callClaude()` spawns `claude -p "<prompt>" --resume <session> --output-format stream-json --verbose --dangerously-skip-permissions`, parses NDJSON events for session management and liveness reporting, and kills the process after 15 minutes of inactivity.
 
-`buildPrompt()` assembles soul + global memory + thread context + user message into a single prompt. `processIntents()` parses `[LEARN:]`, `[FORGET:]`, `[VOICE_REPLY]`, `[CRON:]` tags from Claude's response and executes the side effects before stripping them from the output.
+`buildPrompt()` assembles soul + global memory (facts + goals) + semantic memory (vector search) + thread context + skill registry + user message into a single prompt. `processIntents()` parses `[REMEMBER:]`, `[FORGET:]`, `[GOAL:]`, `[DONE:]`, `[VOICE_REPLY]`, `[CRON:]` tags from Claude's response and executes the side effects before stripping them from the output.
 
 `createLivenessReporter()` sends typing indicators and tool progress messages while Claude works. `heartbeatTick()` and `cronTick()` are timer-driven loops for proactive check-ins and scheduled jobs.
 
-Security: only `TELEGRAM_USER_ID` can interact (everyone else is silently rejected). Rate limited to 10 messages/minute. Filenames are sanitized against path traversal. Claude output is capped at 1MB. LEARN/FORGET facts are capped at 200 chars.
+Security: only `TELEGRAM_USER_ID` can interact (everyone else is silently rejected). Rate limited to 10 messages/minute. Filenames are sanitized against path traversal. Claude output is capped at 1MB. REMEMBER/GOAL/DONE entries are capped at 200 chars.
 
 ---
 

@@ -51,7 +51,7 @@ tail -f ~/.claude-relay/relay-error.log
 
 **Single file core** — `src/relay.ts` is the entire relay.
 
-**Message flow**: Every message goes through `buildPrompt()` → `callClaude()` → `processIntents()` → response sent back. The prompt includes three memory layers and instructions for intent tags.
+**Message flow**: Every message goes through `buildPrompt()` → `callClaude()` → `processIntents()` → response sent back. The prompt includes four memory layers and instructions for intent tags.
 
 **Threading model:**
 - Bot works in Telegram DMs (single conversation) and supergroups with Topics (one conversation per topic)
@@ -59,9 +59,9 @@ tail -f ~/.claude-relay/relay-error.log
 - Session IDs stored per-thread in Supabase `threads` table
 - Groups without Topics are treated as a single conversation
 
-**Three-layer memory system** (assembled in `buildPrompt()`):
+**Four-layer memory system** (assembled in `buildPrompt()`):
 1. **Soul** — Bot personality from `bot_soul` table, loaded at the top of every prompt
-2. **Global memory** — Cross-thread facts and goals from `global_memory` table, auto-learned via `[REMEMBER:]` intent
+2. **Global memory** — Cross-thread typed entries from `global_memory` table (facts via `[REMEMBER:]`, goals via `[GOAL:]`/`[DONE:]`)
 3. **Semantic memory** — Relevant memories fetched via `getRelevantMemory()` → Supabase Edge Function → OpenAI embeddings → `match_memory()` RPC. Deduplicated against facts/goals. Graceful fallback (empty) when Edge Functions unavailable.
 4. **Thread context** — Per-thread summary + recent 5 messages from Supabase
 
@@ -71,6 +71,8 @@ tail -f ~/.claude-relay/relay-error.log
 
 **Key sections in relay.ts:**
 
+- **Skill registry** — `buildSkillRegistry()` scans `~/.claude/skills/` at startup, extracts descriptions from SKILL.md files, injects available skills list into every prompt
+- **Orphan cleanup** — `killOrphanedProcesses()` finds and terminates child processes (skills, tools) left behind after Claude CLI timeout
 - **Supabase v2 layer** — `getOrCreateThread()`, `updateThreadSession()`, `insertThreadMessage()`, `getRecentThreadMessages()`, `getMemoryContext()`, `insertMemory()`, `deleteMemory()`, `getActiveGoals()`, `completeGoal()`, `getRelevantMemory()`, `getActiveSoul()`, `setSoul()`, `logEventV2()`
 - **Intent system** — Claude includes tags in responses that get parsed and stripped before delivery:
   - `[REMEMBER: fact]` → inserts into `global_memory` table with type='fact'
@@ -124,7 +126,7 @@ tail -f ~/.claude-relay/relay-error.log
 Tables used by the relay:
 - `threads` — Conversation channels (telegram IDs, claude session, summary, message count)
 - `thread_messages` — Per-thread message history (role, content)
-- `global_memory` — Cross-thread learned facts (content, source thread)
+- `global_memory` — Cross-thread typed entries (type: fact/goal/completed_goal/preference, content, embedding, deadline, priority)
 - `bot_soul` — Personality definitions (content, is_active)
 - `logs_v2` — Observability events (event, message, metadata, thread_id)
 - `cron_jobs` — Scheduled jobs (name, schedule, prompt, target thread, source: user/agent/file)
@@ -132,8 +134,9 @@ Tables used by the relay:
 
 Migrations:
 - `supabase/migrations/20260210202924_schema_v2_threads_memory_soul.sql` (v2: threads, memory, soul)
-- `supabase/migrations/20260212_heartbeat_cron_schema.sql` (v2.1: heartbeat config, cron jobs)
-- `supabase/migrations/20260212_2_add_file_source.sql` (v2.2: add 'file' source for cron jobs)
+- `supabase/migrations/20260212100000_heartbeat_cron_schema.sql` (v2.1: heartbeat config, cron jobs)
+- `supabase/migrations/20260212100001_add_file_source.sql` (v2.2: add 'file' source for cron jobs)
+- `supabase/migrations/20260213100000_typed_memory_schema.sql` (v2.3: typed memory, vector embeddings, RPCs)
 
 Reference SQL: `examples/supabase-schema-v2.sql`
 
@@ -180,4 +183,4 @@ Note: Session state is stored per-thread in Supabase (`threads.claude_session_id
 - **Groq Whisper API** (external) — Cloud voice transcription with auto language detection
 - **ffmpeg** (system) — Audio format conversion (.oga → .wav)
 - **ElevenLabs API** (external) — Text-to-speech via eleven_v3 model
-- **croner** ^9+ — Cron expression parser for 5-field cron schedules with timezone support
+- **croner** ^10+ — Cron expression parser for 5-field cron schedules with timezone support

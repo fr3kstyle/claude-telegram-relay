@@ -4,7 +4,7 @@
  * Relay that connects Telegram to Claude Code CLI with:
  * - Threaded conversations (DMs + Telegram Topics)
  * - Three-layer memory (soul, global facts, thread context)
- * - Voice transcription via mlx_whisper
+ * - Voice transcription via Groq Whisper API
  * - Intent-based memory management ([REMEMBER:]/[FORGET:]/[GOAL:]/[DONE:] tags)
  *
  * Run: bun run src/relay.ts
