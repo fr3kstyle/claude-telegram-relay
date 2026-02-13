@@ -1712,7 +1712,7 @@ async function callClaude(
     args.push("--resume", threadInfo.sessionId);
   }
 
-  args.push("--output-format", "json", "--dangerously-skip-permissions");
+  args.push("--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions");
 
   console.log(`Calling Claude: ${prompt.substring(0, 80)}...`);
 
@@ -1724,8 +1724,8 @@ async function callClaude(
       env: { ...process.env },
     });
 
-    // Inactivity-based timeout: kill only if Claude goes silent for 5 min.
-    // Long-running tasks that produce output (tool calls, progress) stay alive.
+    // Inactivity-based timeout: kill only if Claude goes silent for 15 min.
+    // With stream-json, every event resets this timer — much more reliable than stderr-only.
     let timedOut = false;
     let inactivityTimer: Timer = setTimeout(() => {
       timedOut = true;
@@ -1749,25 +1749,109 @@ async function callClaude(
       }, CLAUDE_INACTIVITY_TIMEOUT_MS);
     };
 
-    // Read stderr incrementally to detect activity and reset the timer
+    // Drain stderr for logging (no longer used for activity detection)
     const stderrChunks: string[] = [];
     const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
+    const stderrDecoder = new TextDecoder();
     const stderrDrain = (async () => {
       try {
         while (true) {
           const { done, value } = await stderrReader.read();
           if (done) break;
-          stderrChunks.push(decoder.decode(value, { stream: true }));
-          resetInactivityTimer();
+          stderrChunks.push(stderrDecoder.decode(value, { stream: true }));
         }
       } catch {
         // Stream closed — process ended
       }
     })();
 
-    // Read stdout fully (JSON output arrives at end)
-    let output = await new Response(proc.stdout).text();
+    // Parse stdout as NDJSON stream (one JSON event per line)
+    let resultText = "";
+    let newSessionId: string | null = null;
+    let buffer = "";
+    let totalBytes = 0;
+    const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+    const stdoutDecoder = new TextDecoder();
+
+    try {
+      while (true) {
+        const { done, value } = await stdoutReader.read();
+        if (done) break;
+
+        const chunk = stdoutDecoder.decode(value, { stream: true });
+        totalBytes += chunk.length;
+        buffer += chunk;
+
+        // Size guard: stop accumulating if output is enormous
+        if (totalBytes > MAX_OUTPUT_SIZE) {
+          console.warn(`Claude stream output very large (${totalBytes} bytes), stopping parse`);
+          break;
+        }
+
+        // Split into complete lines, keep last partial line in buffer
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          // Every line of output = activity → reset inactivity timer
+          resetInactivityTimer();
+
+          try {
+            const event = JSON.parse(line);
+
+            // Extract session ID from init event (available immediately)
+            if (event.type === "system" && event.subtype === "init" && event.session_id) {
+              newSessionId = event.session_id;
+            }
+
+            // Also capture session_id from assistant or result events as fallback
+            if (event.session_id && !newSessionId) {
+              newSessionId = event.session_id;
+            }
+
+            // Extract final result text from result event (always last)
+            if (event.type === "result") {
+              if (typeof event.result === "string") {
+                resultText = event.result;
+              } else if (event.result?.content?.[0]?.text) {
+                resultText = event.result.content[0].text;
+              }
+              // Result event also has session_id
+              if (event.session_id) {
+                newSessionId = event.session_id;
+              }
+            }
+          } catch {
+            // Non-JSON line or partial data — skip silently
+          }
+        }
+      }
+    } catch {
+      // Stream closed — process ended
+    }
+
+    // Process any remaining buffer content
+    if (buffer.trim()) {
+      try {
+        const event = JSON.parse(buffer);
+        if (event.type === "result") {
+          if (typeof event.result === "string") {
+            resultText = event.result;
+          } else if (event.result?.content?.[0]?.text) {
+            resultText = event.result.content[0].text;
+          }
+          if (event.session_id) newSessionId = event.session_id;
+        } else if (event.session_id && !newSessionId) {
+          newSessionId = event.session_id;
+        }
+        resetInactivityTimer();
+      } catch {
+        // Incomplete JSON at end — ignore
+      }
+    }
+
     await stderrDrain;
     clearTimeout(inactivityTimer);
     const stderrText = stderrChunks.join("");
@@ -1790,25 +1874,10 @@ async function callClaude(
       return { text: "Sorry, something went wrong processing your request. Please try again.", sessionId: null };
     }
 
-    // Size guard before JSON parsing
-    if (output.length > MAX_OUTPUT_SIZE) {
-      console.warn(`Claude output very large (${output.length} bytes), truncating`);
-      output = output.substring(0, MAX_OUTPUT_SIZE);
-    }
-
-    // Parse JSON response
-    let resultText: string;
-    let newSessionId: string | null = null;
-    try {
-      const json = JSON.parse(output);
-      resultText = typeof json.result === "string"
-        ? json.result
-        : json.result?.content?.[0]?.text || output;
-      newSessionId = json.session_id || null;
-    } catch {
-      // Fallback: if JSON parse fails, treat entire output as text
-      console.warn("Failed to parse Claude JSON output, using raw text");
-      resultText = output;
+    // Fallback: if no result event was parsed, use raw stderr info
+    if (!resultText) {
+      console.warn("No result event found in stream-json output");
+      resultText = "Sorry, I couldn't parse the response. Please try again.";
     }
 
     // Store session ID in Supabase for this thread
