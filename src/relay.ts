@@ -19,6 +19,7 @@ import { Cron } from "croner";
 import { searchMemoryLocal, generateEmbedding } from "./embed-local.ts";
 import { listEmails, sendEmail, getAuthorizedAccounts, isAccountAuthorized } from "./google-apis.ts";
 import { fetchEmailContext, formatEmailContextForHeartbeat } from "./email/email-context.ts";
+import { createGmailProvider } from "./email/gmail-provider.ts";
 
 // ============================================================
 // THREAD CONTEXT TYPES
