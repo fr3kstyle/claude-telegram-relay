@@ -6,6 +6,7 @@
 
 export * from './types.ts';
 export { GmailProvider, createGmailProvider } from './gmail-provider.ts';
+export { OutlookProvider, createOutlookProvider } from './outlook-provider.ts';
 export {
   EmailProviderFactory,
   getEmailProviderFactory,
