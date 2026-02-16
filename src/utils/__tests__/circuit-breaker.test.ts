@@ -40,6 +40,14 @@ describe('CircuitBreaker', () => {
     });
 
     it('opens after reaching failure threshold', async () => {
+      // Use a longer reset timeout to avoid race condition in isOpen() check
+      // isOpen() returns false when the reset window has elapsed
+      breaker = new CircuitBreaker('test', {
+        failureThreshold: 3,
+        resetTimeout: 1000, // Long enough to test state before reset window elapses
+        successThreshold: 2,
+      });
+
       const failingFn = () => Promise.reject(new Error('fail'));
 
       try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
