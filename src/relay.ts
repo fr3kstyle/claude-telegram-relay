@@ -2434,13 +2434,17 @@ async function acquireLock(): Promise<boolean> {
     const existingLock = await readFile(LOCK_FILE, "utf-8").catch(() => null);
 
     if (existingLock) {
-      const pid = parseInt(existingLock);
-      try {
-        process.kill(pid, 0);
-        console.log(`Another instance running (PID: ${pid})`);
-        return false;
-      } catch {
-        console.log("Stale lock found, taking over...");
+      const pid = parseInt(existingLock.trim());
+      if (!isNaN(pid)) {
+        try {
+          process.kill(pid, 0);
+          console.log(`Another instance running (PID: ${pid})`);
+          return false;
+        } catch {
+          console.log("Stale lock found, taking over...");
+          // Remove stale lock before attempting to create new one
+          await unlink(LOCK_FILE).catch(() => {});
+        }
       }
     }
 
@@ -2449,11 +2453,26 @@ async function acquireLock(): Promise<boolean> {
     if (fd) {
       await fd.writeFile(process.pid.toString());
       await fd.close();
-    } else {
-      // File was created between our check and open — retry with overwrite
-      // (only happens after stale lock removal)
-      await writeFile(LOCK_FILE, process.pid.toString());
+      return true;
     }
+
+    // File was created between our check and open - another instance won
+    // Verify who actually got it
+    const newLock = await readFile(LOCK_FILE, "utf-8").catch(() => "");
+    const newPid = parseInt(newLock.trim());
+    if (!isNaN(newPid) && newPid !== process.pid) {
+      try {
+        process.kill(newPid, 0);
+        console.log(`Another instance won race (PID: ${newPid})`);
+        return false;
+      } catch {
+        // Weird - they died right after acquiring lock, retry
+        await unlink(LOCK_FILE).catch(() => {});
+        return acquireLock(); // Recursive retry
+      }
+    }
+
+    // We somehow have the lock (race condition edge case)
     return true;
   } catch (error) {
     console.error("Lock error:", error);
