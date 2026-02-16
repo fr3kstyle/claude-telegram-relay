@@ -201,3 +201,141 @@ export function validateEmailWithProvider(
     provider: detectedProvider || expectedProvider,
   };
 }
+
+/**
+ * OAuth error categories for user-friendly messaging
+ */
+export type OAuthErrorCategory =
+  | 'invalid_code'
+  | 'expired_code'
+  | 'already_used'
+  | 'network'
+  | 'credentials'
+  | 'access_denied'
+  | 'rate_limited'
+  | 'unknown';
+
+/**
+ * Parsed OAuth error with user-friendly message
+ */
+export interface ParsedOAuthError {
+  category: OAuthErrorCategory;
+  userMessage: string;
+  suggestion: string;
+}
+
+/**
+ * Parse OAuth error response and return user-friendly message
+ *
+ * Handles errors from both Google and Microsoft OAuth endpoints.
+ *
+ * @param error - Raw error message or response from OAuth provider
+ * @returns Parsed error with category and suggestions
+ */
+export function parseOAuthError(error: string): ParsedOAuthError {
+  const errorLower = error.toLowerCase();
+
+  // Invalid authorization code
+  if (
+    errorLower.includes('invalid_grant') ||
+    errorLower.includes('invalid authorization code') ||
+    errorLower.includes('authorization code is invalid') ||
+    errorLower.includes('bad request')
+  ) {
+    return {
+      category: 'invalid_code',
+      userMessage: 'The authorization code is invalid or malformed.',
+      suggestion: 'Make sure you copied the entire code from the redirect URL.',
+    };
+  }
+
+  // Expired code
+  if (
+    errorLower.includes('expired') ||
+    errorLower.includes('code has expired') ||
+    errorLower.includes('stale')
+  ) {
+    return {
+      category: 'expired_code',
+      userMessage: 'The authorization code has expired.',
+      suggestion: 'Codes are only valid for a few minutes. Start the process again with /email add.',
+    };
+  }
+
+  // Already used code
+  if (
+    errorLower.includes('already used') ||
+    errorLower.includes('replay') ||
+    errorLower.includes('code was already redeemed')
+  ) {
+    return {
+      category: 'already_used',
+      userMessage: 'This authorization code has already been used.',
+      suggestion: 'Each code can only be used once. Start fresh with /email add.',
+    };
+  }
+
+  // Network/connectivity issues
+  if (
+    errorLower.includes('network') ||
+    errorLower.includes('econnrefused') ||
+    errorLower.includes('enotfound') ||
+    errorLower.includes('timeout') ||
+    errorLower.includes('fetch failed')
+  ) {
+    return {
+      category: 'network',
+      userMessage: 'Network error connecting to the OAuth provider.',
+      suggestion: 'Check your internet connection and try again.',
+    };
+  }
+
+  // Credentials/configuration issues
+  if (
+    errorLower.includes('unauthorized_client') ||
+    errorLower.includes('invalid_client') ||
+    errorLower.includes('redirect_uri_mismatch') ||
+    errorLower.includes('credentials') ||
+    errorLower.includes('client_id') ||
+    errorLower.includes('client_secret')
+  ) {
+    return {
+      category: 'credentials',
+      userMessage: 'OAuth credentials are missing or misconfigured.',
+      suggestion: 'Contact the administrator to check the OAuth app configuration.',
+    };
+  }
+
+  // Access denied by user
+  if (
+    errorLower.includes('access_denied') ||
+    errorLower.includes('consent') ||
+    errorLower.includes('permission')
+  ) {
+    return {
+      category: 'access_denied',
+      userMessage: 'Access was denied during authorization.',
+      suggestion: 'Make sure to grant all requested permissions when prompted.',
+    };
+  }
+
+  // Rate limiting
+  if (
+    errorLower.includes('rate limit') ||
+    errorLower.includes('too many requests') ||
+    errorLower.includes('429')
+  ) {
+    return {
+      category: 'rate_limited',
+      userMessage: 'Too many authorization attempts.',
+      suggestion: 'Wait a few minutes before trying again.',
+    };
+  }
+
+  // Unknown error - provide raw message
+  return {
+    category: 'unknown',
+    userMessage: `Authorization failed: ${error.substring(0, 200)}`,
+    suggestion: 'Try /email add again to get a fresh authorization URL.',
+  };
+}

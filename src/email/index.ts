@@ -26,8 +26,9 @@ export {
   getProviderDisplayName,
   sanitizeDisplayName,
   validateEmailWithProvider,
+  parseOAuthError,
 } from './validation.ts';
-export type { EmailValidationResult } from './validation.ts';
+export type { EmailValidationResult, OAuthErrorCategory, ParsedOAuthError } from './validation.ts';
 
 import { GmailProvider, createGmailProvider } from './gmail-provider.ts';
 import { getEmailProviderFactory } from './provider-factory.ts';

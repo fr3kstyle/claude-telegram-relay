@@ -29,6 +29,7 @@ import {
   isValidProviderType,
   getProviderDisplayName,
   sanitizeDisplayName,
+  parseOAuthError,
   type RelayEmailMessage,
 } from "./email/index.ts";
 import { getEmailProviderFactory, getAuthorizedProviders } from "./email/provider-factory.ts";
@@ -3227,10 +3228,12 @@ bot.command("email", async (ctx) => {
       console.log(`[Email] Account authorized: ${email}`);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
+      const parsed = parseOAuthError(errorMsg);
       await ctx.reply(
-        `❌ Failed to verify authorization.\n\n` +
-        `Error: ${errorMsg}\n\n` +
-        `Try /email add ${email} again to get a fresh authorization URL.`
+        `❌ <b>Authorization Failed</b>\n\n` +
+        `${parsed.userMessage}\n\n` +
+        `<b>Suggestion:</b> ${parsed.suggestion}`,
+        { parse_mode: "HTML" }
       );
     }
     return;
