@@ -237,26 +237,13 @@ export class EmailProviderFactory {
 
   /**
    * Get fallback accounts when database is unavailable
+   *
+   * Returns empty array - all accounts should be discovered from the database.
+   * This ensures a single source of truth and prevents hardcoded account drift.
    */
   private getFallbackAccounts(): EmailAccountConfig[] {
-    return [
-      {
-        id: 'fallback-1',
-        providerType: 'gmail',
-        emailAddress: 'Fr3kchy@gmail.com',
-        displayName: 'Fr3kchy Gmail',
-        isActive: true,
-        syncEnabled: true,
-      },
-      {
-        id: 'fallback-2',
-        providerType: 'gmail',
-        emailAddress: 'fr3k@mcpintelligence.com.au',
-        displayName: 'MCP Intelligence',
-        isActive: true,
-        syncEnabled: true,
-      },
-    ];
+    console.warn('[ProviderFactory] Database unavailable, no fallback accounts');
+    return [];
   }
 
   /**
@@ -382,13 +369,14 @@ export class EmailProviderFactory {
       if (!error && data) {
         return this.createProvider(data.provider as EmailProviderType, emailAddress);
       }
+
+      if (error) {
+        console.error(`[ProviderFactory] Database lookup failed for ${emailAddress}:`, error.message);
+      }
     }
 
-    // Fallback: assume Gmail
-    if (this.isRegistered('gmail')) {
-      return this.createProvider('gmail', emailAddress);
-    }
-
+    // No fallback - account must exist in database
+    console.warn(`[ProviderFactory] No account found for ${emailAddress}`);
     return null;
   }
 }

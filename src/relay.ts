@@ -3157,9 +3157,44 @@ bot.command("email", async (ctx) => {
     return;
   }
 
-  // /email list [drafts|starred|important] - list managed items
+  // /email list [accounts|drafts|starred|important] - list managed items or accounts
   if (args === "list" || args.startsWith("list ")) {
     const subArg = args.startsWith("list ") ? args.substring(5).trim() : "";
+
+    // /email list accounts - show all authorized accounts with status
+    if (subArg === "accounts" || subArg === "") {
+      try {
+        const factory = getEmailProviderFactory();
+        const accountConfigs = await factory.discoverAccounts();
+
+        let text = `<b>📧 Email Accounts (${accountConfigs.length})</b>\n\n`;
+
+        if (accountConfigs.length === 0) {
+          text += "No accounts configured.\n\n";
+          text += "Add an account: /email add <email>";
+        } else {
+          accountConfigs.forEach((acc, i) => {
+            const statusIcon = acc.isActive ? "✅" : "⏸";
+            const syncIcon = acc.syncEnabled ? "🔄" : "⏸";
+            const providerIcon = acc.providerType === 'gmail' ? '📥' :
+                                 acc.providerType === 'outlook' ? '📤' : '📧';
+            const namePart = acc.displayName ? ` (${acc.displayName})` : '';
+            text += `${statusIcon} <b>${i + 1}.</b> ${providerIcon} ${acc.emailAddress}${namePart}\n`;
+            text += `   Provider: ${acc.providerType} · Sync: ${syncIcon}\n\n`;
+          });
+          text += "Commands:\n/email add <email>\n/email inbox\n/email read <id>";
+        }
+
+        try {
+          await ctx.reply(text, { parse_mode: "HTML" });
+        } catch {
+          await ctx.reply(text.replace(/<[^>]*>/g, ""));
+        }
+      } catch (error) {
+        await ctx.reply(`❌ Failed to list accounts: ${error}`);
+      }
+      return;
+    }
 
     try {
       await ctx.reply("📋 Fetching managed items...");
