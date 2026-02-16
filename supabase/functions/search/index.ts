@@ -15,13 +15,23 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json();
     const query = body.query;
-    const matchCount = body.match_count ?? 5;
-    const matchThreshold = body.match_threshold ?? 0.7;
+    const matchCount = body.match_count ?? 10;
+    const matchThreshold = body.match_threshold ?? 0.6; // Lower threshold for better recall
+    const table = body.table ?? "global_memory"; // Support both tables
 
     if (!query || typeof query !== "string") {
       return new Response(
         JSON.stringify({ error: "Missing or invalid query parameter" }),
         { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    // Check for OpenAI key
+    if (!openaiKey) {
+      console.error("OPENAI_API_KEY not configured");
+      return new Response(
+        JSON.stringify({ results: [], error: "OpenAI API key not configured" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }
 
@@ -45,7 +55,7 @@ Deno.serve(async (req) => {
       const err = await embeddingResponse.text();
       console.error("OpenAI API error:", err);
       return new Response(
-        JSON.stringify({ results: [], error: "OpenAI API error" }),
+        JSON.stringify({ results: [], error: "OpenAI API error", details: err }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }
@@ -60,15 +70,52 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Call match_memory() RPC
-    const { data, error } = await supabase.rpc("match_memory", {
-      query_embedding: JSON.stringify(queryEmbedding),
+    // Try unified search first (searches both tables)
+    let data, error;
+
+    // Try match_memory_unified for best results
+    const unifiedResult = await supabase.rpc("match_memory_unified", {
+      query_embedding: queryEmbedding,
       match_threshold: matchThreshold,
       match_count: matchCount,
     });
 
+    if (!unifiedResult.error && unifiedResult.data && unifiedResult.data.length > 0) {
+      data = unifiedResult.data;
+      error = null;
+    } else {
+      // Fallback to original match_memory
+      const fallbackResult = await supabase.rpc("match_memory", {
+        query_embedding: queryEmbedding,
+        match_threshold: matchThreshold,
+        match_count: matchCount,
+      });
+      data = fallbackResult.data;
+      error = fallbackResult.error;
+    }
+
     if (error) {
-      console.error("match_memory RPC error:", error);
+      console.error("Search RPC error:", error);
+
+      // Last resort: direct table query
+      const directQuery = await supabase
+        .from(table)
+        .select("id, content, type")
+        .not("embedding", "is", null)
+        .textSearch("content", query.split(" ").join(" | "), { type: "websearch" })
+        .limit(matchCount);
+
+      if (directQuery.data && directQuery.data.length > 0) {
+        return new Response(
+          JSON.stringify({
+            results: directQuery.data.map(r => ({ ...r, similarity: 0.5 })),
+            fallback: true,
+            method: "text_search"
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
       return new Response(
         JSON.stringify({ results: [], error: error.message }),
         { status: 200, headers: { "Content-Type": "application/json" } }

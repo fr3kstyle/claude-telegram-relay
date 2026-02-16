@@ -16,6 +16,7 @@ import { writeFile, mkdir, readFile, unlink, open, readdir } from "fs/promises";
 import { join, basename } from "path";
 import { createClient } from "@supabase/supabase-js";
 import { Cron } from "croner";
+import { searchMemoryLocal, generateEmbedding } from "./embed-local.ts";
 
 // ============================================================
 // THREAD CONTEXT TYPES
@@ -346,8 +347,26 @@ async function getRecentThreadMessages(
 async function getMemoryContext(): Promise<string[]> {
   if (!supabase) return [];
   try {
-    const { data } = await supabase.rpc("get_facts");
-    return (data || []).map((m: { content: string }) => m.content);
+    // Try RPC first (global_memory)
+    const { data: rpcFacts } = await supabase.rpc("get_facts");
+    if (rpcFacts && rpcFacts.length > 0) {
+      return rpcFacts.map((m: { content: string }) => m.content);
+    }
+
+    // Fallback: query memory table directly
+    const { data: memoryFacts } = await supabase
+      .from("memory")
+      .select("content")
+      .eq("type", "fact")
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (memoryFacts && memoryFacts.length > 0) {
+      return memoryFacts.map((m: { content: string }) => m.content);
+    }
+
+    return [];
   } catch (e) {
     console.error("getMemoryContext error:", e);
     return [];
@@ -401,24 +420,45 @@ async function deleteMemory(searchText: string): Promise<boolean> {
     return false;
   }
   try {
-    const { data: items, error } = await supabase
+    // Try global_memory first
+    const { data: globalItems, error: globalErr } = await supabase
       .from("global_memory")
       .select("id, content, type")
-      .in("type", ["fact", "goal", "preference"])
+      .in("type", ["fact", "goal", "preference", "strategy", "action", "reflection", "reminder", "note"])
       .limit(200);
-    if (error) {
-      console.error("deleteMemory query error:", error);
-      return false;
+
+    if (!globalErr && globalItems) {
+      const match = globalItems.find((m: { id: string; content: string }) =>
+        m.content.toLowerCase().includes(searchText.toLowerCase())
+      );
+      if (match) {
+        await supabase.from("global_memory").delete().eq("id", match.id);
+        console.log(`Forgot memory (global_memory) [${(match as any).type}]: ${match.content}`);
+        return true;
+      }
     }
-    const match = items?.find((m: { id: string; content: string }) =>
-      m.content.toLowerCase().includes(searchText.toLowerCase())
-    );
-    if (match) {
-      await supabase.from("global_memory").delete().eq("id", match.id);
-      console.log(`Forgot memory [${(match as any).type}]: ${match.content}`);
-      return true;
+
+    // Try memory table as fallback
+    const { data: memoryItems, error: memErr } = await supabase
+      .from("memory")
+      .select("id, content, type")
+      .in("type", ["fact", "goal", "preference", "strategy", "action", "reflection"])
+      .eq("status", "active")
+      .limit(200);
+
+    if (!memErr && memoryItems) {
+      const match = memoryItems.find((m: { id: string; content: string }) =>
+        m.content.toLowerCase().includes(searchText.toLowerCase())
+      );
+      if (match) {
+        await supabase.from("memory").delete().eq("id", match.id);
+        console.log(`Forgot memory (memory) [${(match as any).type}]: ${match.content}`);
+        return true;
+      }
     }
-    console.warn(`deleteMemory: no match found for "${searchText}" (searched ${items?.length || 0} entries)`);
+
+    const total = (globalItems?.length || 0) + (memoryItems?.length || 0);
+    console.warn(`deleteMemory: no match found for "${searchText}" (searched ${total} entries)`);
     return false;
   } catch (e) {
     console.error("deleteMemory error:", e);
@@ -431,14 +471,36 @@ async function getActiveGoals(): Promise<
 > {
   if (!supabase) return [];
   try {
-    const { data } = await supabase.rpc("get_active_goals");
-    return (data || []).map(
-      (g: { content: string; deadline: string | null; priority: number }) => ({
+    // Try RPC first (global_memory)
+    const { data: rpcGoals } = await supabase.rpc("get_active_goals");
+    if (rpcGoals && rpcGoals.length > 0) {
+      return rpcGoals.map(
+        (g: { content: string; deadline: string | null; priority: number }) => ({
+          content: g.content,
+          deadline: g.deadline,
+          priority: g.priority,
+        })
+      );
+    }
+
+    // Fallback: query memory table directly
+    const { data: memoryGoals } = await supabase
+      .from("memory")
+      .select("content, deadline, priority")
+      .eq("type", "goal")
+      .eq("status", "active")
+      .order("priority", { ascending: false })
+      .limit(20);
+
+    if (memoryGoals && memoryGoals.length > 0) {
+      return memoryGoals.map((g: any) => ({
         content: g.content,
         deadline: g.deadline,
-        priority: g.priority,
-      })
-    );
+        priority: g.priority || 3,
+      }));
+    }
+
+    return [];
   } catch (e) {
     console.error("getActiveGoals error:", e);
     return [];
@@ -449,23 +511,48 @@ async function completeGoal(searchText: string): Promise<boolean> {
   if (!supabase) return false;
   if (!searchText || searchText.length > 200) return false;
   try {
-    const { data: goals } = await supabase
+    // Try global_memory first
+    const { data: globalGoals } = await supabase
       .from("global_memory")
       .select("id, content")
       .eq("type", "goal")
       .is("completed_at", null)
       .limit(100);
-    const match = goals?.find((g: { id: string; content: string }) =>
+
+    let match = globalGoals?.find((g: { id: string; content: string }) =>
       g.content.toLowerCase().includes(searchText.toLowerCase())
     );
+
     if (match) {
       await supabase
         .from("global_memory")
         .update({ type: "completed_goal", completed_at: new Date().toISOString() })
         .eq("id", match.id);
-      console.log(`Goal completed: ${match.content}`);
+      console.log(`Goal completed (global_memory): ${match.content}`);
       return true;
     }
+
+    // Try memory table as fallback
+    const { data: memoryGoals } = await supabase
+      .from("memory")
+      .select("id, content")
+      .eq("type", "goal")
+      .eq("status", "active")
+      .limit(100);
+
+    match = memoryGoals?.find((g: { id: string; content: string }) =>
+      g.content.toLowerCase().includes(searchText.toLowerCase())
+    );
+
+    if (match) {
+      await supabase
+        .from("memory")
+        .update({ type: "completed_goal", status: "completed" })
+        .eq("id", match.id);
+      console.log(`Goal completed (memory): ${match.content}`);
+      return true;
+    }
+
     return false;
   } catch (e) {
     console.error("completeGoal error:", e);
@@ -477,19 +564,56 @@ async function getRelevantMemory(
   query: string
 ): Promise<Array<{ content: string; type: string; similarity: number }>> {
   if (!supabase) return [];
+
+  // Primary: Use local semantic search (generates embedding, uses RPC)
   try {
-    const { data, error } = await supabase.functions.invoke("search", {
-      body: { query, match_count: 5, match_threshold: 0.7 },
-    });
-    if (error) {
-      console.warn("Semantic search unavailable:", error.message);
-      return [];
+    const results = await searchMemoryLocal(query, 10, 0.5);
+    if (results && results.length > 0) {
+      return results;
     }
-    return data?.results || [];
   } catch (e) {
-    // Graceful fallback — Edge Functions not deployed or unreachable
-    return [];
+    // Local search failed, try other fallbacks
   }
+
+  // Fallback 1: Direct text search via RPC
+  try {
+    const { data, error } = await supabase.rpc("search_memory_text", {
+      search_query: query,
+      match_count: 10,
+    });
+    if (!error && data && data.length > 0) {
+      return data.map((r: any) => ({
+        content: r.content,
+        type: r.type,
+        similarity: r.rank || 0.5,
+      }));
+    }
+  } catch (e) {
+    // RPC doesn't exist, continue to fallback
+  }
+
+  // Fallback 2: Simple ILIKE search
+  try {
+    const word = query.split(" ")[0];
+    const { data, error } = await supabase
+      .from("memory")
+      .select("content, type")
+      .ilike("content", `%${word}%`)
+      .in("type", ["fact", "goal", "preference", "strategy", "action"])
+      .eq("status", "active")
+      .limit(5);
+    if (!error && data && data.length > 0) {
+      return data.map((r: any) => ({
+        content: r.content,
+        type: r.type,
+        similarity: 0.4,
+      }));
+    }
+  } catch (e) {
+    // All fallbacks failed
+  }
+
+  return [];
 }
 
 async function getActiveSoul(): Promise<string> {

@@ -1,21 +1,28 @@
 {
   "name": "claude-telegram-relay",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "start": "bun run src/relay.ts",
     "dev": "bun run --watch src/relay.ts",
+    "agent": "bun run src/agent-loop.ts",
+    "deep-think": "bun run src/deep-think.ts",
+    "goal-engine": "bun run src/goal-engine.ts",
+    "cli": "bun run src/cli.ts",
     "setup": "bun run setup/install.ts",
     "test:telegram": "bun run setup/test-telegram.ts",
     "test:supabase": "bun run setup/test-supabase.ts",
+    "test:semantic": "bun run setup/test-semantic-search.ts",
     "setup:launchd": "bun run setup/configure-launchd.ts",
     "setup:services": "bun run setup/configure-services.ts",
-    "setup:verify": "bun run setup/verify.ts"
+    "setup:verify": "bun run setup/verify.ts",
+    "migrate": "cp supabase/migrations/*.sql /tmp/migrations && echo 'Run migrations in Supabase dashboard'"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.95.3",
     "croner": "^10.0.1",
-    "grammy": "^1.37.1"
+    "grammy": "^1.37.1",
+    "pg": "^8.18.0"
   },
   "devDependencies": {
     "@types/bun": "latest"
