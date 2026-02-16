@@ -146,6 +146,22 @@ export class CircuitBreaker {
   }
 
   /**
+   * Record a success (for manual integration when not using execute())
+   */
+  recordSuccess(): void {
+    this.totalCalls++;
+    this.onSuccess();
+  }
+
+  /**
+   * Record a failure (for manual integration when not using execute())
+   */
+  recordFailure(error?: unknown): void {
+    this.totalCalls++;
+    this.onFailure(error);
+  }
+
+  /**
    * Manually reset the circuit (for testing or admin override)
    */
   reset(): void {

@@ -22,6 +22,7 @@ import { join, dirname } from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { processMemoryIntents } from "./memory.ts";
 import { execSync } from "child_process";
+import { circuitBreakers, CircuitOpenError } from "./utils/circuit-breaker.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -92,6 +93,24 @@ function killOrphanedClaudeProcesses() {
     return 0;
   }
 }
+
+// ============================================================
+// CIRCUIT BREAKER for Claude API calls
+// ============================================================
+
+// Circuit breaker for agent-loop's Claude API calls
+// Prevents cascading failures when API is slow or failing
+const claudeCircuitBreaker = circuitBreakers.get("agent-loop-claude-api", {
+  failureThreshold: 3,     // Open after 3 consecutive failures
+  resetTimeout: 60000,     // Try again after 1 minute
+  successThreshold: 1,     // One success closes the circuit
+  onOpen: (name, failures) => {
+    console.log(`[CircuitBreaker:${name}] OPENED after ${failures} failures - blocking calls for 60s`);
+  },
+  onClose: (name) => {
+    console.log(`[CircuitBreaker:${name}] CLOSED - resuming normal operation`);
+  },
+});
 
 // ============================================================
 // CONFIGURATION
@@ -222,6 +241,17 @@ async function callClaudeWithRetry(
   prompt: string,
   maxRetries: number = 3
 ): Promise<ExecutionResult> {
+  // Check circuit breaker first - prevents cascading failures
+  if (claudeCircuitBreaker.isOpen()) {
+    console.log("[AGENT] Circuit breaker OPEN - skipping Claude call to prevent cascade");
+    return {
+      success: false,
+      output: "",
+      error: "Circuit breaker open - too many recent failures. Waiting for reset.",
+      attempts: 0
+    };
+  }
+
   let lastError = "";
   const TIMEOUT_MS = parseInt(process.env.AGENT_TIMEOUT || "600000"); // 10 minute default
   const MIN_MEMORY_MB = 500; // Don't spawn if less than this available
@@ -256,6 +286,7 @@ async function callClaudeWithRetry(
 
       if (exitCode === 0) {
         console.log(`[AGENT] Claude responded successfully (${output.length} chars)`);
+        claudeCircuitBreaker.recordSuccess(); // Close circuit on success
         return { success: true, output: output.trim(), attempts: attempt };
       }
 
@@ -266,6 +297,7 @@ async function callClaudeWithRetry(
       // Retrying OOM kills just spawns more processes that also get killed
       if (exitCode === 137 || exitCode === 139 || exitCode === 143) {
         console.log(`[AGENT] OOM/Signal kill detected (exit ${exitCode}), aborting retries to prevent cascade`);
+        claudeCircuitBreaker.recordFailure(); // Record failure for circuit breaker
         return { success: false, output: "", error: `Process killed by signal (exit ${exitCode}) - likely OOM. Aborting to prevent retry loop.`, attempts: attempt };
       }
 
@@ -287,6 +319,8 @@ async function callClaudeWithRetry(
     }
   }
 
+  // All retries exhausted - record failure for circuit breaker
+  claudeCircuitBreaker.recordFailure();
   return { success: false, output: "", error: lastError, attempts: maxRetries };
 }
 
