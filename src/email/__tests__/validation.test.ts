@@ -12,6 +12,7 @@ import {
   getProviderDisplayName,
   sanitizeDisplayName,
   validateEmailWithProvider,
+  parseOAuthError,
 } from "../validation.ts";
 
 describe("validateEmail", () => {
@@ -285,5 +286,57 @@ describe("validateEmailWithProvider", () => {
       expect(result.valid).toBe(true);
       expect(result.provider).toBe("gmail");
     });
+  });
+});
+
+describe("parseOAuthError", () => {
+  test("detects invalid_grant from Google", () => {
+    const result = parseOAuthError('Token exchange failed: {"error":"invalid_grant"}');
+    expect(result.category).toBe("invalid_code");
+    expect(result.userMessage).toContain("invalid");
+    expect(result.suggestion).toContain("entire code");
+  });
+
+  test("detects expired code", () => {
+    const result = parseOAuthError("Authorization code has expired");
+    expect(result.category).toBe("expired_code");
+    expect(result.userMessage).toContain("expired");
+    expect(result.suggestion).toContain("email add");
+  });
+
+  test("detects already used code", () => {
+    const result = parseOAuthError("Code was already redeemed");
+    expect(result.category).toBe("already_used");
+    expect(result.suggestion).toContain("once");
+  });
+
+  test("detects network errors", () => {
+    const result = parseOAuthError("fetch failed: ECONNREFUSED");
+    expect(result.category).toBe("network");
+    expect(result.suggestion).toContain("internet");
+  });
+
+  test("detects credential issues", () => {
+    const result = parseOAuthError("unauthorized_client: Invalid client");
+    expect(result.category).toBe("credentials");
+    expect(result.suggestion).toContain("administrator");
+  });
+
+  test("detects access denied", () => {
+    const result = parseOAuthError("access_denied: User declined");
+    expect(result.category).toBe("access_denied");
+    expect(result.suggestion).toContain("permissions");
+  });
+
+  test("detects rate limiting", () => {
+    const result = parseOAuthError("429 Too Many Requests");
+    expect(result.category).toBe("rate_limited");
+    expect(result.suggestion).toContain("Wait");
+  });
+
+  test("handles unknown errors gracefully", () => {
+    const result = parseOAuthError("Something weird happened");
+    expect(result.category).toBe("unknown");
+    expect(result.userMessage).toContain("Something weird happened");
   });
 });
