@@ -75,6 +75,16 @@ You (Telegram) ──> Grammy Bot ──> Claude Code CLI ──> Tools, Web, Fi
 - **macOS, Linux, or WSL** (Windows via WSL)
 - **[Bun](https://bun.sh)** runtime — `curl -fsSL https://bun.sh/install | bash`
 - **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** CLI — `npm install -g @anthropic-ai/claude-code` (must be authenticated)
+
+> **Version Pinning (Recommended):** To avoid compatibility issues with CLI updates, pin your Claude CLI version:
+> ```bash
+> # Check current version
+> claude --version
+>
+> # Install specific version (replace x.x.x with desired version)
+> npm install -g @anthropic-ai/claude-code@x.x.x
+> ```
+> The relay checks CLI version at startup and warns if it differs from the tested version.
 - **Telegram account** + a bot from [@BotFather](https://t.me/BotFather)
 - **[Supabase](https://supabase.com)** project (free tier works)
 
