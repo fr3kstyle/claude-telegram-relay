@@ -2,10 +2,10 @@
  * Gmail Provider Implementation
  *
  * Implements EmailProvider interface using Gmail API.
- * Uses OAuth tokens from google-oauth.ts module.
+ * Uses encrypted OAuth tokens from TokenManager with database storage.
  */
 
-import { getValidAccessToken } from '../google-oauth.ts';
+import { getTokenManager } from '../auth/token-manager.ts';
 import type {
   EmailProvider,
   EmailMessage,
@@ -21,6 +21,7 @@ import type {
 } from './types.ts';
 
 const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1';
+const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 // Gmail API types
 interface GmailMessageHeader {
@@ -186,25 +187,92 @@ function gmailToEmailMessage(gmail: GmailMessageResponse): EmailMessage {
 }
 
 /**
+ * Load Google OAuth credentials
+ */
+async function loadCredentials(): Promise<{ client_id: string; client_secret: string }> {
+  const { readFile } = await import('fs/promises');
+  const { existsSync } = await import('fs');
+  const { join } = await import('path');
+
+  const RELAY_DIR = join(process.env.HOME || '~', '.claude-relay');
+  const CREDENTIALS_FILE = join(RELAY_DIR, 'google-credentials.json');
+
+  if (!existsSync(CREDENTIALS_FILE)) {
+    throw new Error(
+      `Google credentials file not found: ${CREDENTIALS_FILE}\n` +
+      `Download it from Google Cloud Console > APIs & Services > Credentials`
+    );
+  }
+
+  const content = await readFile(CREDENTIALS_FILE, 'utf-8');
+  const creds = JSON.parse(content);
+  // Google credentials use 'web' object format
+  return {
+    client_id: creds.web?.client_id || creds.client_id,
+    client_secret: creds.web?.client_secret || creds.client_secret,
+  };
+}
+
+/**
+ * Google token refresh callback for TokenManager
+ */
+async function refreshGoogleToken(refreshToken: string): Promise<{ accessToken: string; refreshToken?: string; expiresIn: number }> {
+  const { client_id, client_secret } = await loadCredentials();
+
+  const response = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      refresh_token: refreshToken,
+      client_id,
+      client_secret,
+      grant_type: 'refresh_token',
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Google token refresh failed: ${error}`);
+  }
+
+  const data = await response.json();
+
+  return {
+    accessToken: data.access_token,
+    // Google doesn't always return a new refresh token
+    refreshToken: data.refresh_token || undefined,
+    expiresIn: data.expires_in,
+  };
+}
+
+// Register refresh callback with TokenManager on first use
+let refreshCallbackRegistered = false;
+
+function ensureRefreshCallback(): void {
+  if (!refreshCallbackRegistered) {
+    getTokenManager().registerRefreshCallback('google', refreshGoogleToken);
+    refreshCallbackRegistered = true;
+  }
+}
+
+/**
  * Gmail Email Provider
  */
 export class GmailProvider implements EmailProvider {
   private email: string;
-  private accessToken: string | null = null;
 
   constructor(email: string) {
     this.email = email;
+    ensureRefreshCallback();
   }
 
   /**
    * Get authorization header with valid access token
    */
   private async getAuthHeaders(): Promise<Record<string, string>> {
-    if (!this.accessToken) {
-      this.accessToken = await getValidAccessToken(this.email);
-    }
+    const accessToken = await getTokenManager().getAccessToken('google', this.email);
     return {
-      Authorization: `Bearer ${this.accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     };
   }
@@ -221,9 +289,10 @@ export class GmailProvider implements EmailProvider {
 
     if (!response.ok) {
       const error = await response.text();
-      // Token might be expired, try to refresh
+      // Token might be expired - invalidate and retry
+      // TokenManager will handle getting a fresh token on next getAccessToken call
       if (response.status === 401) {
-        this.accessToken = null;
+        await getTokenManager().invalidateToken('google', this.email, 'Gmail API 401 - token expired');
         const newHeaders = await this.getAuthHeaders();
         const retryResponse = await fetch(`${GMAIL_API_BASE}${endpoint}`, {
           ...options,
@@ -258,14 +327,14 @@ export class GmailProvider implements EmailProvider {
   }
 
   async authenticate(): Promise<void> {
-    this.accessToken = await getValidAccessToken(this.email);
-    // Verify by fetching profile
+    // Verify by fetching profile - TokenManager handles token retrieval/refresh
     await this.fetchApi('/users/me/profile');
   }
 
   async isAuthenticated(): Promise<boolean> {
     try {
-      await this.authenticate();
+      // Check if we can get a valid access token
+      await getTokenManager().getAccessToken('google', this.email);
       return true;
     } catch {
       return false;
