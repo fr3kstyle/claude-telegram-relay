@@ -2972,7 +2972,7 @@ bot.command("email", async (ctx) => {
 
       // If specific category requested
       if (subArg === "drafts") {
-        const drafts = await listEmails(email, { maxResults: 15, labelIds: ["DRAFT"] });
+        const drafts = await listEmailsForRelay(email, { maxResults: 15, labelIds: ["DRAFT"] });
         text += `<b>Drafts (${drafts.length})</b>\n`;
         if (drafts.length === 0) {
           text += "No drafts found.\n";
@@ -2984,7 +2984,7 @@ bot.command("email", async (ctx) => {
           });
         }
       } else if (subArg === "starred") {
-        const starred = await listEmails(email, { maxResults: 15, labelIds: ["STARRED"] });
+        const starred = await listEmailsForRelay(email, { maxResults: 15, labelIds: ["STARRED"] });
         text += `<b>Starred (${starred.length})</b>\n`;
         if (starred.length === 0) {
           text += "No starred emails.\n";
@@ -2997,7 +2997,7 @@ bot.command("email", async (ctx) => {
           });
         }
       } else if (subArg === "important") {
-        const important = await listEmails(email, { maxResults: 15, labelIds: ["IMPORTANT"] });
+        const important = await listEmailsForRelay(email, { maxResults: 15, labelIds: ["IMPORTANT"] });
         text += `<b>Important (${important.length})</b>\n`;
         if (important.length === 0) {
           text += "No important emails.\n";
@@ -3012,9 +3012,9 @@ bot.command("email", async (ctx) => {
       } else {
         // Show summary of all categories
         const [drafts, starred, important] = await Promise.all([
-          listEmails(email, { maxResults: 5, labelIds: ["DRAFT"] }),
-          listEmails(email, { maxResults: 5, labelIds: ["STARRED"] }),
-          listEmails(email, { maxResults: 5, labelIds: ["IMPORTANT"] }),
+          listEmailsForRelay(email, { maxResults: 5, labelIds: ["DRAFT"] }),
+          listEmailsForRelay(email, { maxResults: 5, labelIds: ["STARRED"] }),
+          listEmailsForRelay(email, { maxResults: 5, labelIds: ["IMPORTANT"] }),
         ]);
 
         text += `<b>Drafts (${drafts.length})</b>\n`;

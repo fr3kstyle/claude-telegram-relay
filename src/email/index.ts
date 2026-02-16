@@ -196,3 +196,42 @@ function emailMessageToRelayFormat(msg: EmailMessage): RelayEmailMessage {
     labels: msg.labels,
   };
 }
+
+/**
+ * Send an email using provider abstraction
+ *
+ * Adapter function that works with any email provider (Gmail, Outlook, etc.)
+ */
+export async function sendEmailForRelay(
+  fromEmail: string,
+  options: {
+    to: string;
+    subject: string;
+    body: string;
+    html?: boolean;
+  }
+): Promise<{ id: string; threadId?: string }> {
+  const factory = getEmailProviderFactory();
+  const provider = await factory.getProvider(fromEmail);
+
+  if (!provider) {
+    throw new Error(`No provider available for ${fromEmail}`);
+  }
+
+  // Parse the 'to' address into EmailAddress format
+  const toMatch = options.to.match(/(?:"?([^"]*)"?\s)?<?([^\s>]+@[^\s>]+)>?/);
+  const toAddress = toMatch
+    ? { address: toMatch[2], name: toMatch[1]?.trim() }
+    : { address: options.to, name: undefined };
+
+  // Build send options
+  const sendOptions = {
+    to: [toAddress],
+    subject: options.subject,
+    bodyText: options.html ? undefined : options.body,
+    bodyHtml: options.html ? options.body : undefined,
+  };
+
+  const result = await provider.sendMessage(sendOptions);
+  return { id: result.id, threadId: result.threadId };
+}
