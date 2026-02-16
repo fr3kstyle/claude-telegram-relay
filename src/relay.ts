@@ -35,6 +35,7 @@ import { getEmailProviderFactory, getAuthorizedProviders } from "./email/provide
 import type { EmailProvider, EmailMessage, EmailProviderType } from "./email/types.ts";
 import { getAuthUrl, exchangeCodeForToken, saveToken } from "./google-oauth.ts";
 import { startTokenRefreshScheduler, stopTokenRefreshScheduler } from "./auth/index.ts";
+import { parseEmailAddArgs, EMAIL_ADD_USAGE } from "./utils/command-parser.ts";
 
 // ============================================================
 // THREAD CONTEXT TYPES
@@ -3043,49 +3044,18 @@ bot.command("email", async (ctx) => {
   if (args.startsWith("add ")) {
     const addArgs = args.substring(4).trim();
 
-    // Parse arguments
-    // Format: /email add <email> [provider] [--name "Display Name"]
-    const emailMatch = addArgs.match(/^([^\s]+@[^\s]+)/);
-    if (!emailMatch) {
-      await ctx.reply(
-        "Usage: /email add <email> [provider] [--name \"Display Name\"]\n\n" +
-        "Examples:\n" +
-        "  /email add user@gmail.com\n" +
-        "  /email add user@company.com gmail --name \"Work\"\n" +
-        "  /email add user@outlook.com outlook\n\n" +
-        "Providers: gmail, outlook"
-      );
+    // Use typed parser for robust argument handling
+    const parseResult = parseEmailAddArgs(addArgs);
+
+    if (!parseResult.success) {
+      await ctx.reply(`❌ ${parseResult.error}\n\n${parseResult.usage || EMAIL_ADD_USAGE}`);
       return;
     }
 
-    const rawEmail = emailMatch[1];
-    let remaining = addArgs.substring(rawEmail.length).trim();
+    const { email, provider: parsedProvider, displayName } = parseResult.data;
 
-    // Parse provider (optional)
-    let provider: EmailProviderType | undefined;
-    const providerMatch = remaining.match(/^(gmail|outlook)\b/i);
-    if (providerMatch) {
-      provider = providerMatch[1].toLowerCase() as EmailProviderType;
-      remaining = remaining.substring(providerMatch[0].length).trim();
-    }
-
-    // Parse --name flag (optional)
-    let displayName: string | undefined;
-    const nameMatch = remaining.match(/--name\s+"([^"]+)"/);
-    if (nameMatch) {
-      displayName = sanitizeDisplayName(nameMatch[1]);
-    }
-
-    // Validate email and detect provider
-    const validation = validateEmailWithProvider(rawEmail, provider);
-
-    if (!validation.valid) {
-      await ctx.reply(`❌ ${validation.error}`);
-      return;
-    }
-
-    const email = validation.email!;
-    const finalProvider = validation.provider || 'gmail';
+    // Determine final provider (parsed or auto-detected, defaulting to gmail)
+    const finalProvider = parsedProvider || 'gmail';
 
     // Check for duplicate
     if (accounts.includes(email)) {
