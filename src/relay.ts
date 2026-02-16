@@ -97,7 +97,7 @@ function sanitizeFilename(name: string): string {
 
 // Claude CLI limits
 const CLAUDE_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 min of no output = stuck
-const MAX_OUTPUT_SIZE = 1024 * 1024; // 1MB
+const MAX_OUTPUT_SIZE = 3 * 1024 * 1024; // 3MB
 
 // Circuit breakers for external APIs (with observability logging)
 const groqCircuitBreaker = circuitBreakers.get("groq-whisper", {
