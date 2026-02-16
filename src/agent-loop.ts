@@ -43,6 +43,56 @@ function killActiveChildren() {
   activeProcesses.clear();
 }
 
+/**
+ * Kill orphaned claude processes from previous agent-loop instances.
+ * When PM2 restarts agent-loop, the old process may die before its
+ * child claude processes, leaving them orphaned (reparented to PID 1).
+ */
+function killOrphanedClaudeProcesses() {
+  try {
+    // Find claude processes that are orphaned (ppid = 1) or whose parent is dead
+    const result = Bun.spawnSync(["bash", "-c",
+      `ps -eo pid,ppid,command | grep 'claude' | grep -v 'agent-loop' | grep -v grep`
+    ]);
+    const output = new TextDecoder().decode(result.stdout).trim();
+    if (!output) return 0;
+
+    const currentPid = process.pid;
+    let killed = 0;
+
+    for (const line of output.split("\n")) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      if (match) {
+        const pid = parseInt(match[1]);
+        const ppid = parseInt(match[2]);
+        const cmd = match[3];
+
+        // Skip our own processes
+        if (pid === currentPid) continue;
+
+        // Kill if orphaned (ppid=1) or if it's a claude CLI process not from us
+        if (ppid === 1 || cmd.includes('/.npm-global/bin/claude') || cmd.includes('/.bun/bin/claude')) {
+          try {
+            process.kill(pid, "SIGTERM");
+            console.log(`[AGENT] Killed orphaned claude process ${pid}: ${cmd.substring(0, 60)}`);
+            killed++;
+          } catch {
+            // Process already exited
+          }
+        }
+      }
+    }
+
+    if (killed > 0) {
+      console.log(`[AGENT] Cleaned up ${killed} orphaned claude process(es) on startup`);
+    }
+    return killed;
+  } catch {
+    // Best-effort cleanup
+    return 0;
+  }
+}
+
 // ============================================================
 // CONFIGURATION
 // ============================================================
@@ -640,6 +690,9 @@ async function main() {
   console.log(`[AGENT] Loop interval: ${LOOP_INTERVAL_MS}ms`);
   console.log(`[AGENT] Alert interval: ${ALERT_INTERVAL_MS}ms (${ALERT_INTERVAL_MS / 60000} min)`);
   console.log(`[AGENT] Claude path: ${CLAUDE_PATH}`);
+
+  // Clean up orphaned claude processes from previous instances
+  killOrphanedClaudeProcesses();
 
   // Ensure state directory exists
   const { mkdir } = await import("fs/promises");
