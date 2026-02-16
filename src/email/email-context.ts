@@ -2,12 +2,12 @@
  * Email Context Fetcher
  *
  * Provides email context for heartbeat and other agent operations.
- * Fetches recent emails from authorized Gmail accounts and formats
- * them for inclusion in prompts.
+ * Fetches recent emails from authorized email accounts (Gmail, Outlook, etc.)
+ * using the provider abstraction and formats them for inclusion in prompts.
  */
 
-import { createGmailProvider, GmailProvider } from './gmail-provider.ts';
-import type { EmailMessage } from './types.ts';
+import { getEmailProviderFactory } from './provider-factory.ts';
+import type { EmailProvider, EmailMessage } from './types.ts';
 
 export interface EmailContextOptions {
   maxEmails?: number;        // Max emails per account (default: 5)
@@ -18,6 +18,7 @@ export interface EmailContextOptions {
 
 export interface EmailContextResult {
   account: string;
+  providerType: string;      // 'gmail', 'outlook', etc.
   unreadCount: number;
   recentEmails: EmailSummary[];
   importantEmails: EmailSummary[];
@@ -33,27 +34,49 @@ export interface EmailSummary {
   labels?: string[];
 }
 
-// Known authorized email accounts
-const AUTHORIZED_ACCOUNTS = [
-  'Fr3kchy@gmail.com',
-  'fr3k@mcpintelligence.com.au',
-];
-
 /**
- * Get all authorized Gmail providers
+ * Get all authorized email providers using the factory
+ *
+ * Uses provider-agnostic discovery to find all authorized accounts
+ * from both database and token files.
  */
-async function getAuthorizedProviders(accounts?: string[]): Promise<Array<{ email: string; provider: GmailProvider }>> {
-  const emailsToCheck = accounts || AUTHORIZED_ACCOUNTS;
-  const providers: Array<{ email: string; provider: GmailProvider }> = [];
+async function getAuthorizedProviders(accounts?: string[]): Promise<Array<{ email: string; provider: EmailProvider; providerType: string }>> {
+  const factory = getEmailProviderFactory();
 
-  for (const email of emailsToCheck) {
-    const provider = createGmailProvider(email);
+  // If specific accounts requested, use those
+  if (accounts && accounts.length > 0) {
+    const providers: Array<{ email: string; provider: EmailProvider; providerType: string }> = [];
+    for (const email of accounts) {
+      const provider = await factory.getProvider(email);
+      if (provider) {
+        const accountInfo = await factory.discoverAccount(email);
+        providers.push({
+          email,
+          provider,
+          providerType: accountInfo?.providerType || 'unknown'
+        });
+      }
+    }
+    return providers;
+  }
+
+  // Otherwise discover all authorized accounts
+  const discoveredAccounts = await factory.discoverAccounts();
+  const providers: Array<{ email: string; provider: EmailProvider; providerType: string }> = [];
+
+  for (const account of discoveredAccounts) {
+    if (!account.isActive) continue;
     try {
-      if (await provider.isAuthenticated()) {
-        providers.push({ email, provider });
+      const provider = await factory.getProvider(account.emailAddress);
+      if (provider && await provider.isAuthenticated()) {
+        providers.push({
+          email: account.emailAddress,
+          provider,
+          providerType: account.providerType
+        });
       }
     } catch (error) {
-      console.error(`[EmailContext] Failed to authenticate ${email}:`, error);
+      console.error(`[EmailContext] Failed to authenticate ${account.emailAddress}:`, error);
     }
   }
 
@@ -128,12 +151,17 @@ export async function fetchEmailContext(options: EmailContextOptions = {}): Prom
 
   const results: EmailContextResult[] = [];
 
-  for (const { email, provider } of providers) {
+  for (const { email, provider, providerType } of providers) {
     try {
+      // Determine inbox folder based on provider type
+      // Gmail uses 'INBOX', Outlook uses 'inbox'
+      const inboxFolder = providerType === 'outlook' ? 'inbox' : 'INBOX';
+
       // Fetch recent emails from inbox
       const listResult = await provider.listMessages({
         maxResults: maxEmails * 2, // Fetch more to filter
-        labelIds: ['INBOX'],
+        folder: inboxFolder,
+        labelIds: [inboxFolder],
       });
 
       const recentEmails: EmailSummary[] = [];
@@ -151,8 +179,12 @@ export async function fetchEmailContext(options: EmailContextOptions = {}): Prom
 
         if (!msg.flags?.isRead) unreadCount++;
 
-        // Categorize
-        if (msg.flags?.isStarred || msg.labels?.includes('IMPORTANT')) {
+        // Categorize - check for starred/flagged or important labels
+        const isImportant = msg.flags?.isStarred ||
+          msg.labels?.includes('IMPORTANT') ||
+          msg.labels?.includes('flagged');
+
+        if (isImportant) {
           importantEmails.push(summary);
         } else {
           recentEmails.push(summary);
@@ -164,6 +196,7 @@ export async function fetchEmailContext(options: EmailContextOptions = {}): Prom
 
       results.push({
         account: email,
+        providerType,
         unreadCount,
         recentEmails: recentEmails.slice(0, maxEmails),
         importantEmails: importantEmails.slice(0, maxEmails),
@@ -174,6 +207,7 @@ export async function fetchEmailContext(options: EmailContextOptions = {}): Prom
       // Still add account with empty results to show we tried
       results.push({
         account: email,
+        providerType,
         unreadCount: 0,
         recentEmails: [],
         importantEmails: [],
@@ -199,13 +233,14 @@ export function formatEmailContextForHeartbeat(context: EmailContextResult[]): s
 
   for (const account of context) {
     const totalEmails = account.recentEmails.length + account.importantEmails.length;
+    const providerLabel = account.providerType !== 'gmail' ? ` [${account.providerType}]` : '';
 
     if (totalEmails === 0 && account.unreadCount === 0) {
-      lines.push(`**${account.account}**: Inbox clear (no unread in last 24h)`);
+      lines.push(`**${account.account}**${providerLabel}: Inbox clear (no unread in last 24h)`);
       continue;
     }
 
-    lines.push(`**${account.account}**: ${account.unreadCount} unread`);
+    lines.push(`**${account.account}**${providerLabel}: ${account.unreadCount} unread`);
 
     if (account.importantEmails.length > 0) {
       lines.push('\n  Important:');
