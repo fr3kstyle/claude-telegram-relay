@@ -3128,13 +3128,16 @@ bot.command("email", async (ctx) => {
       // Save tokens to file
       await saveToken(email, tokenData);
 
-      // Try to save to database as well
-      try {
-        const factory = getEmailProviderFactory();
-        // The factory will discover the new account on next call
-        // For now, we just verify the token was saved
-      } catch {
-        // Database save failed, but file save succeeded
+      // Register account in database for persistence
+      const factory = getEmailProviderFactory();
+      const registerResult = await factory.registerAccount({
+        emailAddress: email,
+        providerType: validation.provider || 'gmail',
+      });
+
+      if (!registerResult.success) {
+        console.warn(`[Email] Database registration failed for ${email}: ${registerResult.error}`);
+        // Continue - file-based token is saved, account will be discovered
       }
 
       await ctx.reply(
