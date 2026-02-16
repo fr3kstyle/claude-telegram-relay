@@ -413,6 +413,28 @@ async function insertMemory(
   priority?: number
 ): Promise<boolean> {
   if (!supabase) return false;
+
+  // Validate content
+  if (!content || content.trim().length === 0) {
+    console.warn("insertMemory: empty content rejected");
+    return false;
+  }
+
+  // Validate type is one of the allowed values
+  const validTypes = ['fact', 'goal', 'action', 'strategy', 'reflection', 'preference', 'completed_goal', 'system_event'];
+  if (!validTypes.includes(type)) {
+    console.warn(`insertMemory: invalid type "${type}" rejected`);
+    return false;
+  }
+
+  // Check for unbalanced brackets (potential parsing corruption)
+  const openBrackets = (content.match(/\[/g) || []).length;
+  const closeBrackets = (content.match(/\]/g) || []).length;
+  if (openBrackets !== closeBrackets) {
+    console.warn(`insertMemory: unbalanced brackets in content rejected: ${content.substring(0, 50)}...`);
+    return false;
+  }
+
   try {
     const row: Record<string, unknown> = {
       content,
@@ -1316,6 +1338,7 @@ async function checkDiskUsage(): Promise<{
 /**
  * Run goal hygiene during heartbeat - auto-archive orphan actions older than threshold.
  * This keeps the memory table clean and prevents stale actions from accumulating.
+ * Falls back to direct TypeScript implementation when RPC is not available.
  */
 async function runGoalHygiene(daysThreshold: number): Promise<{
   orphansArchived: number;
@@ -1323,51 +1346,123 @@ async function runGoalHygiene(daysThreshold: number): Promise<{
   hygieneReport: Record<string, unknown> | null;
 }> {
   try {
-    // Get hygiene report first
+    // Try RPC first
     const { data: hygieneData, error: hygieneError } = await supabase.rpc("goal_hygiene", {
       p_days_stale: daysThreshold,
       p_similarity_threshold: 0.8,
     });
 
-    if (hygieneError) {
-      console.log("Goal hygiene: RPC not available or error:", hygieneError.message);
-      return { orphansArchived: 0, malformedDeleted: 0, hygieneReport: null };
+    if (!hygieneError && hygieneData) {
+      // RPC available - use it
+      const report = hygieneData as Record<string, unknown>;
+      const orphanActions = (report?.orphan_actions as Array<{ id: string }>) || [];
+
+      let orphansArchived = 0;
+      if (orphanActions.length > 0) {
+        const { error: archiveError } = await supabase.rpc("archive_stale_items", {
+          p_days_stale: daysThreshold,
+          p_dry_run: false,
+        });
+
+        if (archiveError) {
+          console.log("Goal hygiene: failed to archive stale items:", archiveError.message);
+        } else {
+          orphansArchived = orphanActions.length;
+          console.log(`Goal hygiene: archived ${orphansArchived} orphan action(s)`);
+        }
+      }
+
+      let malformedDeleted = 0;
+      const malformed = (report?.malformed as Array<{ id: string }>) || [];
+      if (malformed.length > 0) {
+        const { error: deleteError } = await supabase.rpc("delete_malformed_entries", {
+          p_dry_run: false,
+        });
+
+        if (deleteError) {
+          console.log("Goal hygiene: failed to delete malformed:", deleteError.message);
+        } else {
+          malformedDeleted = malformed.length;
+          console.log(`Goal hygiene: deleted ${malformedDeleted} malformed entr(y/ies)`);
+        }
+      }
+
+      return { orphansArchived, malformedDeleted, hygieneReport: report };
     }
 
-    const report = hygieneData as Record<string, unknown>;
-    const orphanActions = (report?.orphan_actions as Array<{ id: string }>) || [];
+    // Fallback: Direct TypeScript implementation when RPC unavailable
+    console.log("Goal hygiene: RPC not available, using direct implementation");
 
-    // Archive orphan actions older than threshold
+    // Find orphan actions older than threshold (actions with no parent goal)
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysThreshold);
+
+    const { data: orphanActions, error: orphanError } = await supabase
+      .from("global_memory")
+      .select("id, content, priority, created_at")
+      .eq("type", "action")
+      .eq("status", "pending")
+      .is("parent_id", null)
+      .lt("created_at", cutoffDate.toISOString());
+
     let orphansArchived = 0;
-    if (orphanActions.length > 0) {
-      const { error: archiveError } = await supabase.rpc("archive_stale_items", {
-        p_days_stale: daysThreshold,
-        p_dry_run: false,
-      });
+    if (!orphanError && orphanActions && orphanActions.length > 0) {
+      const orphanIds = orphanActions.map((a) => a.id);
+      const { error: archiveError } = await supabase
+        .from("global_memory")
+        .update({ type: "completed_action" })
+        .in("id", orphanIds);
 
       if (archiveError) {
-        console.log("Goal hygiene: failed to archive stale items:", archiveError.message);
+        console.log("Goal hygiene: failed to archive orphan actions:", archiveError.message);
       } else {
-        orphansArchived = orphanActions.length;
+        orphansArchived = orphanIds.length;
         console.log(`Goal hygiene: archived ${orphansArchived} orphan action(s)`);
       }
     }
 
-    // Delete malformed entries (always safe to clean)
+    // Find and delete malformed entries
+    const { data: malformed, error: malformedQueryError } = await supabase
+      .from("global_memory")
+      .select("id, content, type")
+      .or("content.is.null,content.eq.")
+      .or("content.like.]`%,content.like.%`[%", { foreignTable: "global_memory" });
+
     let malformedDeleted = 0;
-    const malformed = (report?.malformed as Array<{ id: string }>) || [];
-    if (malformed.length > 0) {
-      const { error: deleteError } = await supabase.rpc("delete_malformed_entries", {
-        p_dry_run: false,
-      });
+    if (!malformedQueryError && malformed && malformed.length > 0) {
+      const malformedIds = malformed.map((m) => m.id);
+      const { error: deleteError } = await supabase.from("global_memory").delete().in("id", malformedIds);
 
       if (deleteError) {
-        console.log("Goal hygiene: failed to delete malformed:", deleteError.message);
+        console.log("Goal hygiene: failed to delete malformed entries:", deleteError.message);
       } else {
-        malformedDeleted = malformed.length;
+        malformedDeleted = malformedIds.length;
         console.log(`Goal hygiene: deleted ${malformedDeleted} malformed entr(y/ies)`);
       }
     }
+
+    // Build hygiene report for logging
+    const { count: totalGoals } = await supabase
+      .from("global_memory")
+      .select("*", { count: "exact", head: true })
+      .eq("type", "goal")
+      .eq("status", "active");
+
+    const { count: totalActions } = await supabase
+      .from("global_memory")
+      .select("*", { count: "exact", head: true })
+      .eq("type", "action")
+      .eq("status", "pending");
+
+    const report = {
+      summary: {
+        total_active_goals: totalGoals || 0,
+        total_pending_actions: totalActions || 0,
+      },
+      orphan_actions: orphanActions || [],
+      malformed: malformed || [],
+      fallback_mode: true,
+    };
 
     return { orphansArchived, malformedDeleted, hygieneReport: report };
   } catch (error) {
