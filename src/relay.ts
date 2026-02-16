@@ -33,7 +33,8 @@ import {
 } from "./email/index.ts";
 import { getEmailProviderFactory, getAuthorizedProviders } from "./email/provider-factory.ts";
 import type { EmailProvider, EmailMessage, EmailProviderType } from "./email/types.ts";
-import { getAuthUrl, exchangeCodeForToken } from "./google-oauth.ts";
+import { getAuthUrl as getGoogleAuthUrl, exchangeCodeForToken as exchangeGoogleCode } from "./google-oauth.ts";
+import { getAuthUrl as getMicrosoftAuthUrl, exchangeCodeForToken as exchangeMicrosoftCode } from "./microsoft-oauth.ts";
 import { startTokenRefreshScheduler, stopTokenRefreshScheduler } from "./auth/index.ts";
 import { getTokenManager, type OAuthToken } from "./auth/token-manager.ts";
 import { parseEmailAddArgs, parseEmailVerifyArgs, EMAIL_ADD_USAGE } from "./utils/command-parser.ts";
@@ -3064,18 +3065,19 @@ bot.command("email", async (ctx) => {
       return;
     }
 
-    // Only Gmail is currently supported for OAuth flow
-    if (finalProvider !== 'gmail') {
-      await ctx.reply(
-        `⚠️ ${getProviderDisplayName(finalProvider)} OAuth is not yet implemented.\n` +
-        `Currently only Gmail is supported for the /email add command.`
-      );
-      return;
-    }
-
     try {
-      // Generate OAuth URL
-      const authUrl = await getAuthUrl(email);
+      // Generate OAuth URL based on provider
+      let authUrl: string;
+      let credentialsFile: string;
+
+      if (finalProvider === 'outlook') {
+        authUrl = await getMicrosoftAuthUrl(email);
+        credentialsFile = '~/.claude-relay/microsoft-credentials.json';
+      } else {
+        // Default to Gmail
+        authUrl = await getGoogleAuthUrl(email);
+        credentialsFile = '~/.claude-relay/google-credentials.json';
+      }
 
       await ctx.reply(
         `📧 <b>Add Email Account</b>\n\n` +
@@ -3089,10 +3091,14 @@ bot.command("email", async (ctx) => {
       );
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
+      const providerName = getProviderDisplayName(finalProvider);
+      const credentialsHint = finalProvider === 'outlook'
+        ? 'Microsoft credentials: ~/.claude-relay/microsoft-credentials.json'
+        : 'Google credentials: ~/.claude-relay/google-credentials.json';
       await ctx.reply(
         `❌ Failed to generate OAuth URL.\n\n` +
-        `Make sure Google credentials are configured:\n` +
-        `~/.claude-relay/google-credentials.json\n\n` +
+        `Make sure ${providerName} credentials are configured:\n` +
+        `${credentialsHint}\n\n` +
         `Error: ${errorMsg}`
       );
     }
@@ -3121,9 +3127,15 @@ bot.command("email", async (ctx) => {
 
     await ctx.reply("🔄 Verifying authorization...");
 
+    // Determine provider for token exchange
+    const provider = validation.provider || 'gmail';
+    const tokenProvider = provider === 'outlook' ? 'microsoft' : 'google';
+
     try {
-      // Exchange code for tokens
-      const tokenData = await exchangeCodeForToken(code, email);
+      // Exchange code for tokens based on provider
+      const tokenData = provider === 'outlook'
+        ? await exchangeMicrosoftCode(code, email)
+        : await exchangeGoogleCode(code, email);
 
       // Store tokens via TokenManager (file + encrypted database)
       const oauthToken: OAuthToken = {
@@ -3132,7 +3144,7 @@ bot.command("email", async (ctx) => {
         expiresAt: new Date(tokenData.expiry_date),
         scopes: tokenData.scope.split(' '),
       };
-      await getTokenManager().storeToken('google', email, oauthToken);
+      await getTokenManager().storeToken(tokenProvider, email, oauthToken);
 
       // Register account in database for persistence
       const factory = getEmailProviderFactory();
