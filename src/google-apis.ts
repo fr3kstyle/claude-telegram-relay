@@ -161,6 +161,90 @@ export async function searchEmails(
 }
 
 /**
+ * List drafts
+ */
+export async function listDrafts(
+  email: string,
+  maxResults = 20
+): Promise<Array<{ id: string; message: GmailMessage }>> {
+  const accessToken = await getValidAccessToken(email);
+
+  const response = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/drafts?maxResults=${maxResults}`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`List drafts failed: ${await response.text()}`);
+  }
+
+  const data = await response.json();
+  const drafts = data.drafts || [];
+
+  // Get message details for each draft
+  const detailed = await Promise.all(
+    drafts.map(async (d: any) => {
+      const msg = await getEmail(email, d.message.id);
+      return { id: d.id, message: msg! };
+    })
+  );
+
+  return detailed.filter(d => d.message);
+}
+
+/**
+ * Delete a draft
+ */
+export async function deleteDraft(
+  email: string,
+  draftId: string
+): Promise<void> {
+  const accessToken = await getValidAccessToken(email);
+
+  const response = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${draftId}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`Delete draft failed: ${await response.text()}`);
+  }
+}
+
+/**
+ * Archive a message (remove from inbox)
+ */
+export async function archiveMessage(
+  email: string,
+  messageId: string
+): Promise<void> {
+  const accessToken = await getValidAccessToken(email);
+
+  const response = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        removeLabelIds: ["INBOX"],
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Archive failed: ${await response.text()}`);
+  }
+}
+
+/**
  * Parse Gmail API message into friendly format
  */
 function parseGmailMessage(data: any): GmailMessage {
