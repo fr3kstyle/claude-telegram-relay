@@ -200,8 +200,54 @@ export async function refreshAccessToken(email: string): Promise<string> {
 
 /**
  * Get a valid access token (refresh if needed)
+ *
+ * Tries database storage first (encrypted), falls back to file storage.
+ * This allows gradual migration from file-based to database tokens.
  */
 export async function getValidAccessToken(email: string): Promise<string> {
+  // Try database storage first
+  try {
+    const { getTokenManager } = await import('./auth/token-manager.ts');
+    const tokenManager = getTokenManager();
+
+    // Register refresh callback for Google
+    tokenManager.registerRefreshCallback('google', async (refreshToken: string) => {
+      const credentials = await loadCredentials();
+      const { client_id, client_secret } = credentials.web;
+
+      const response = await fetch(TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          refresh_token: refreshToken,
+          client_id,
+          client_secret,
+          grant_type: "refresh_token",
+        }).toString(),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Token refresh failed: ${error}`);
+      }
+
+      const data = await response.json();
+      return {
+        accessToken: data.access_token,
+        expiresIn: data.expires_in,
+      };
+    });
+
+    // Try to get token from database
+    if (await tokenManager.hasToken('google', email)) {
+      return tokenManager.getAccessToken('google', email);
+    }
+  } catch (err) {
+    // Database not available, fall back to file storage
+    console.log(`[OAuth] Database storage unavailable, using file storage for ${email}`);
+  }
+
+  // Fall back to file-based token storage
   const tokenData = await loadToken(email);
 
   if (!tokenData) {
