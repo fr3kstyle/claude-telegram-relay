@@ -69,12 +69,13 @@ export async function createABTest(
     return null;
   }
 
-  // Log as memory
-  await supabase.from("global_memory").insert({
+  // Log as memory (use memory table with full schema)
+  await supabase.from("memory").insert({
     type: "action",
     content: `[SELF-IMPROVE] A/B Test started: ${name}`,
     status: "pending",
     priority: 2,
+    weight: 1.0,
   });
 
   return data.id;
@@ -219,10 +220,11 @@ export async function logFailure(
   });
 
   // Create memory to prevent future occurrences
-  await supabase.from("global_memory").insert({
+  await supabase.from("memory").insert({
     type: "reflection",
     content: `[FAILURE-LEARNING] ${description}. Error: ${error}. Prevent recurrence.`,
     status: "active",
+    weight: 1.0,
   });
 }
 
@@ -239,10 +241,11 @@ export async function logSuccess(
   });
 
   if (reusable) {
-    await supabase.from("global_memory").insert({
+    await supabase.from("memory").insert({
       type: "strategy",
       content: `[SUCCESS-PATTERN] ${reusable}`,
       status: "active",
+      weight: 1.0,
     });
   }
 }
@@ -256,13 +259,13 @@ export async function performSelfAssessment(): Promise<{
   const areas: Record<string, number> = {};
   const recommendations: string[] = [];
 
-  // 1. Memory Quality (0-100)
+  // 1. Memory Quality (0-100) - use memory table with full schema
   const { count: totalMemories } = await supabase
-    .from("global_memory")
+    .from("memory")
     .select("*", { count: "exact", head: true });
 
   const { count: withEmbeddings } = await supabase
-    .from("global_memory")
+    .from("memory")
     .select("*", { count: "exact", head: true })
     .not("embedding", "is", null);
 
@@ -272,7 +275,7 @@ export async function performSelfAssessment(): Promise<{
 
   // 2. Goal Progress (0-100)
   const { data: activeGoals } = await supabase
-    .from("global_memory")
+    .from("memory")
     .select("id, status, created_at")
     .eq("type", "goal")
     .eq("status", "active");

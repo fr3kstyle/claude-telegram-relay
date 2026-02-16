@@ -218,12 +218,63 @@ export async function getValidAccessToken(email: string): Promise<string> {
 }
 
 /**
- * Interactive OAuth setup - run this to authorize accounts
+ * Show auth URL for an account
  */
-async function setupOAuth(): Promise<void> {
-  console.log("\n" + "=".repeat(60));
-  console.log("Google OAuth Setup for Claude Agent");
+async function showAuthUrl(email: string): Promise<void> {
+  const authUrl = await getAuthUrl(email);
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`Account: ${email}`);
+  console.log("=".repeat(60));
+  console.log(`\n1. Visit this URL:\n`);
+  console.log(authUrl);
+  console.log(`\n2. Authorize the app`);
+  console.log(`3. Copy the 'code' from the redirect URL`);
+  console.log(`4. Run: bun run src/google-oauth.ts token ${email} YOUR_CODE`);
   console.log("=".repeat(60) + "\n");
+}
+
+/**
+ * Exchange code for token and save
+ */
+async function authorizeWithCode(email: string, code: string): Promise<void> {
+  console.log(`\nAuthorizing ${email}...`);
+  try {
+    const tokenData = await exchangeCodeForToken(code, email);
+    await saveToken(email, tokenData);
+    console.log(`SUCCESS: ${email} authorized!`);
+  } catch (error) {
+    console.error(`FAILED: ${error}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * List authorized accounts
+ */
+async function listAuthorized(): Promise<void> {
+  console.log("\nAuthorized Google Accounts:");
+  console.log("=".repeat(40));
+
+  const accounts = ["Fr3kchy@gmail.com", "fr3k@mcpintelligence.com.au"];
+
+  for (const email of accounts) {
+    const token = await loadToken(email);
+    if (token) {
+      const expiry = new Date(token.expiry_date);
+      console.log(`[OK] ${email} (token expires: ${expiry.toLocaleString()})`);
+    } else {
+      console.log(`[ ]  ${email} (not authorized)`);
+    }
+  }
+  console.log("=".repeat(40) + "\n");
+}
+
+/**
+ * CLI interface
+ */
+async function cli(): Promise<void> {
+  const args = process.argv.slice(2);
+  const cmd = args[0];
 
   // Check credentials file
   if (!existsSync(CREDENTIALS_FILE)) {
@@ -236,89 +287,58 @@ async function setupOAuth(): Promise<void> {
     process.exit(1);
   }
 
-  console.log("Credentials file found.");
-
-  const accounts = [
-    "Fr3kchy@gmail.com",
-    "fr3k@mcpintelligence.com.au",
-  ];
-
-  console.log(`\nAccounts to authorize: ${accounts.length}`);
-  accounts.forEach((email, i) => {
-    console.log(`  ${i + 1}. ${email}`);
-  });
-
-  console.log("\n" + "-".repeat(60));
-  console.log("INSTRUCTIONS:");
-  console.log("-".repeat(60));
-  console.log("For EACH account:");
-  console.log("  1. Click the URL below (or copy to browser)");
-  console.log("  2. Log in with that specific Google account");
-  console.log("  3. Grant permissions");
-  console.log("  4. You'll be redirected to localhost (that's OK)");
-  console.log("  5. Copy the 'code' parameter from the URL");
-  console.log("  6. Paste it here");
-  console.log("-".repeat(60) + "\n");
-
-  const readline = require("readline");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  const question = (prompt: string): Promise<string> =>
-    new Promise((resolve) => rl.question(prompt, resolve));
-
-  for (const email of accounts) {
-    console.log(`\n${"=".repeat(60)}`);
-    console.log(`Account: ${email}`);
-    console.log("=".repeat(60));
-
-    // Check if already authorized
-    const existingToken = await loadToken(email);
-    if (existingToken) {
-      const answer = await question(
-        `Token already exists. Re-authorize? (y/N): `
-      );
-      if (answer.toLowerCase() !== "y") {
-        console.log("Skipping...");
-        continue;
+  switch (cmd) {
+    case "url":
+      // Show auth URL for an account
+      const email = args[1];
+      if (!email) {
+        console.log("Usage: bun run src/google-oauth.ts url EMAIL");
+        console.log("Example: bun run src/google-oauth.ts url Fr3kchy@gmail.com");
+        process.exit(1);
       }
-    }
+      await showAuthUrl(email);
+      break;
 
-    const authUrl = await getAuthUrl(email);
-    console.log(`\nVisit this URL:\n`);
-    console.log(authUrl);
-    console.log(`\n`);
+    case "token":
+      // Exchange code for token
+      const tokenEmail = args[1];
+      const code = args[2];
+      if (!tokenEmail || !code) {
+        console.log("Usage: bun run src/google-oauth.ts token EMAIL CODE");
+        console.log("Example: bun run src/google-oauth.ts token Fr3kchy@gmail.com 4/0AX...");
+        process.exit(1);
+      }
+      await authorizeWithCode(tokenEmail, code);
+      break;
 
-    const code = await question("Enter the authorization code: ");
+    case "list":
+      // List authorized accounts
+      await listAuthorized();
+      break;
 
-    if (!code.trim()) {
-      console.log("No code provided, skipping...");
-      continue;
-    }
+    case "setup":
+    default:
+      // Show all auth URLs
+      console.log("\n" + "=".repeat(60));
+      console.log("Google OAuth Setup for Claude Agent");
+      console.log("=".repeat(60));
+      console.log("\nCredentials found. Setting up accounts...\n");
 
-    try {
-      console.log("\nExchanging code for tokens...");
-      const tokenData = await exchangeCodeForToken(code.trim(), email);
-      await saveToken(email, tokenData);
-      console.log(`SUCCESS: ${email} authorized!`);
-    } catch (error) {
-      console.error(`FAILED: ${error}`);
-    }
+      const accounts = ["Fr3kchy@gmail.com", "fr3k@mcpintelligence.com.au"];
+
+      for (const email of accounts) {
+        await showAuthUrl(email);
+      }
+
+      console.log("After authorizing all accounts, verify with:");
+      console.log("  bun run src/google-oauth.ts list");
+      break;
   }
-
-  rl.close();
-  console.log("\n" + "=".repeat(60));
-  console.log("OAuth Setup Complete!");
-  console.log("=".repeat(60));
-  console.log(`\nTokens saved to: ${TOKENS_DIR}`);
-  console.log("\nYou can now use Gmail, Calendar, and Drive APIs.");
 }
 
-// Run setup if executed directly
-if (import.meta.path === process.argv[1]) {
-  setupOAuth().catch(console.error);
+// Run CLI if executed directly
+if (import.meta.path === process.argv[1] || (process.argv[1] && process.argv[1].endsWith("google-oauth.ts"))) {
+  cli().catch(console.error);
 }
 
 export { SCOPES, TOKENS_DIR, CREDENTIALS_FILE };
