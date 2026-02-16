@@ -877,7 +877,7 @@ async function deleteCronJob(jobId: string): Promise<boolean> {
 
 let cronTimer: Timer | null = null;
 let cronRunning = false;
-const CRON_TICK_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
+const CRON_TICK_INTERVAL_MS = 10 * 60 * 1000; // Check every 10 minutes
 
 function computeNextRun(job: CronJob): string | null {
   const now = new Date();
@@ -1185,7 +1185,7 @@ async function cronTick(): Promise<void> {
 function startCronScheduler(): void {
   if (cronTimer) clearInterval(cronTimer);
   cronTimer = setInterval(cronTick, CRON_TICK_INTERVAL_MS);
-  console.log("Cron scheduler: started (checking every 60s)");
+  console.log("Cron scheduler: started (checking every 10min)");
 }
 
 function stopCronScheduler(): void {
