@@ -33,8 +33,9 @@ import {
 } from "./email/index.ts";
 import { getEmailProviderFactory, getAuthorizedProviders } from "./email/provider-factory.ts";
 import type { EmailProvider, EmailMessage, EmailProviderType } from "./email/types.ts";
-import { getAuthUrl, exchangeCodeForToken, saveToken } from "./google-oauth.ts";
+import { getAuthUrl, exchangeCodeForToken } from "./google-oauth.ts";
 import { startTokenRefreshScheduler, stopTokenRefreshScheduler } from "./auth/index.ts";
+import { getTokenManager, type OAuthToken } from "./auth/token-manager.ts";
 import { parseEmailAddArgs, EMAIL_ADD_USAGE } from "./utils/command-parser.ts";
 
 // ============================================================
@@ -3125,8 +3126,14 @@ bot.command("email", async (ctx) => {
       // Exchange code for tokens
       const tokenData = await exchangeCodeForToken(code, email);
 
-      // Save tokens to file
-      await saveToken(email, tokenData);
+      // Store tokens via TokenManager (file + encrypted database)
+      const oauthToken: OAuthToken = {
+        accessToken: tokenData.access_token,
+        refreshToken: tokenData.refresh_token,
+        expiresAt: new Date(tokenData.expiry_date),
+        scopes: tokenData.scope.split(' '),
+      };
+      await getTokenManager().storeToken('google', email, oauthToken);
 
       // Register account in database for persistence
       const factory = getEmailProviderFactory();
@@ -3156,6 +3163,49 @@ bot.command("email", async (ctx) => {
         `Error: ${errorMsg}\n\n` +
         `Try /email add ${email} again to get a fresh authorization URL.`
       );
+    }
+    return;
+  }
+
+  // /email remove <email> - Remove an email account
+  if (args.startsWith("remove ")) {
+    const email = args.substring(7).trim().toLowerCase();
+
+    if (!email) {
+      await ctx.reply("Usage: /email remove <email>");
+      return;
+    }
+
+    // Validate email format
+    const validation = validateEmailWithProvider(email);
+    if (!validation.valid) {
+      await ctx.reply(`❌ ${validation.error}`);
+      return;
+    }
+
+    await ctx.reply(`🔄 Removing account ${email}...`);
+
+    try {
+      const factory = getEmailProviderFactory();
+      const result = await factory.removeAccount(email);
+
+      if (result.success) {
+        await ctx.reply(
+          `✅ <b>Account Removed</b>\n\n` +
+          `Email: ${email}\n\n` +
+          `The account has been deactivated and its tokens deleted.`,
+          { parse_mode: "HTML" }
+        );
+        console.log(`[Email] Account removed: ${email}`);
+      } else {
+        await ctx.reply(
+          `❌ Failed to remove account.\n\n` +
+          `Error: ${result.error}`
+        );
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await ctx.reply(`❌ Error removing account: ${errorMsg}`);
     }
     return;
   }
@@ -3308,6 +3358,7 @@ bot.command("email", async (ctx) => {
     "/email send <to> <subject> - Compose email\n" +
     "/email add <email> [provider] - Add new account\n" +
     "/email verify <email> <code> - Complete OAuth\n" +
+    "/email remove <email> - Remove account\n" +
     "/email accounts - List authorized accounts"
   );
 });

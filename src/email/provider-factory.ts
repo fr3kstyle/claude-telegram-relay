@@ -350,6 +350,58 @@ export class EmailProviderFactory {
   }
 
   /**
+   * Remove an email account from the database and delete local tokens
+   *
+   * Marks account as inactive in database and removes token file.
+   */
+  async removeAccount(emailAddress: string): Promise<{ success: boolean; error?: string }> {
+    const db = this.getSupabase();
+    const normalizedEmail = emailAddress.toLowerCase().trim();
+
+    // Delete local token file
+    const tokenPath = `${process.env.RELAY_DIR || `${process.env.HOME}/.claude-relay`}/tokens/${normalizedEmail}.json`;
+    try {
+      const fs = await import('fs/promises');
+      await fs.unlink(tokenPath).catch(() => {
+        // File may not exist, that's okay
+      });
+      console.log(`[ProviderFactory] Deleted token file for ${normalizedEmail}`);
+    } catch (err) {
+      // Non-fatal - continue with database removal
+      console.warn(`[ProviderFactory] Could not delete token file: ${err}`);
+    }
+
+    // Remove from cache
+    this.providerCache.delete(normalizedEmail);
+
+    // Mark as inactive in database (or delete entirely)
+    if (!db) {
+      return { success: true }; // No database, file removal only
+    }
+
+    try {
+      const { error } = await db
+        .from('email_accounts')
+        .update({
+          is_active: false,
+          sync_enabled: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('email', normalizedEmail);
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      console.log(`[ProviderFactory] Removed account: ${normalizedEmail}`);
+      return { success: true };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  /**
    * Get a single provider by email address
    *
    * Discovers the account from the database or creates from fallback.
