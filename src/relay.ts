@@ -29,6 +29,7 @@ import {
 import { getEmailProviderFactory, getAuthorizedProviders } from "./email/provider-factory.ts";
 import type { EmailProvider, EmailMessage } from "./email/types.ts";
 import { sendEmailForRelay } from "./email/index.ts";
+import { startTokenRefreshScheduler, stopTokenRefreshScheduler } from "./auth/index.ts";
 
 // ============================================================
 // THREAD CONTEXT TYPES
@@ -2000,6 +2001,7 @@ process.on("exit", () => {
 process.on("SIGINT", async () => {
   stopHeartbeat();
   stopCronScheduler();
+  stopTokenRefreshScheduler();
   await logEventV2("bot_stopping", "Relay shutting down (SIGINT)");
   await releaseLock();
   process.exit(0);
@@ -2007,6 +2009,7 @@ process.on("SIGINT", async () => {
 process.on("SIGTERM", async () => {
   stopHeartbeat();
   stopCronScheduler();
+  stopTokenRefreshScheduler();
   await logEventV2("bot_stopping", "Relay shutting down (SIGTERM)");
   await releaseLock();
   process.exit(0);
@@ -3561,5 +3564,8 @@ bot.start({
 
     // Start cron scheduler
     startCronScheduler();
+
+    // Start token refresh scheduler (proactive OAuth token refresh)
+    startTokenRefreshScheduler();
   },
 });
