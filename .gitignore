@@ -28,3 +28,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Google OAuth
+google-credentials.json
+google-tokens/

@@ -1897,12 +1897,17 @@ async function textToSpeechElevenLabs(text: string): Promise<Buffer | null> {
 }
 
 async function textToSpeech(text: string): Promise<Buffer | null> {
+  console.log(`[TTS] Provider: ${TTS_PROVIDER}, ElevenLabs key: ${ELEVENLABS_API_KEY ? 'yes' : 'no'}`);
+
   if (TTS_PROVIDER === "edge") {
+    console.log("[TTS] Using Edge TTS");
     return textToSpeechEdge(text);
   } else if (TTS_PROVIDER === "elevenlabs" && ELEVENLABS_API_KEY) {
+    console.log("[TTS] Using ElevenLabs");
     return textToSpeechElevenLabs(text);
   }
   // Fallback to Edge TTS (free)
+  console.log("[TTS] Falling back to Edge TTS");
   return textToSpeechEdge(text);
 }
 
@@ -2739,6 +2744,14 @@ bot.command("cron", async (ctx) => {
   );
 });
 
+// /stop - Emergency stop all bot operations
+bot.command("stop", async (ctx) => {
+  console.log("[STOP] Emergency stop requested");
+  await ctx.reply("🛑 Stopping all bot operations...");
+  await logEventV2("emergency_stop", "Emergency stop triggered via /stop command", {}, ctx.threadInfo?.dbId);
+  process.exit(0);
+});
+
 // ============================================================
 // MESSAGE HANDLERS
 // ============================================================
@@ -2774,12 +2787,18 @@ bot.on("message:text", async (ctx) => {
     }
 
     if (wantsVoice) {
+      console.log(`[VOICE_REPLY] Tag detected, generating TTS for ${cleanResponse.length} chars`);
       const audioBuffer = await textToSpeech(cleanResponse);
+      console.log(`[VOICE_REPLY] TTS result: ${audioBuffer ? audioBuffer.length + ' bytes' : 'null'}`);
       if (audioBuffer) {
         const audioPath = join(TEMP_DIR, `tts_${Date.now()}.ogg`);
         await writeFile(audioPath, audioBuffer);
+        console.log(`[VOICE_REPLY] Sending voice message...`);
         await ctx.replyWithVoice(new InputFile(audioPath));
+        console.log(`[VOICE_REPLY] Voice message sent`);
         await unlink(audioPath).catch(() => {});
+      } else {
+        console.log(`[VOICE_REPLY] TTS returned null, no voice sent`);
       }
     }
     await sendResponse(ctx, cleanResponse);
@@ -2823,15 +2842,23 @@ bot.on("message:voice", async (ctx) => {
     }
 
     // Reply with voice if TTS is available
+    console.log(`[Voice] Attempting TTS for response (${claudeResponse.length} chars)`);
     const audioBuffer = await textToSpeech(claudeResponse);
+    console.log(`[Voice] TTS result: ${audioBuffer ? audioBuffer.length + ' bytes' : 'null'}`);
     if (audioBuffer) {
       const audioPath = join(TEMP_DIR, `tts_${Date.now()}.ogg`);
+      console.log(`[Voice] Writing audio to: ${audioPath}`);
       await writeFile(audioPath, audioBuffer);
+      console.log(`[Voice] Sending voice message to Telegram...`);
       await ctx.replyWithVoice(new InputFile(audioPath));
+      console.log(`[Voice] Voice message sent successfully`);
       await unlink(audioPath).catch(() => {});
       // Also send text so it's searchable/readable
+      console.log(`[Voice] Sending text follow-up...`);
       await sendResponse(ctx, claudeResponse);
+      console.log(`[Voice] Complete!`);
     } else {
+      console.log(`[Voice] No audio buffer, sending text only`);
       await sendResponse(ctx, claudeResponse);
     }
   } catch (error) {
@@ -3169,6 +3196,7 @@ console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
 console.log(`Supabase: ${supabase ? "connected" : "disabled"}`);
 console.log(`Voice transcription: ${GROQ_API_KEY ? "Groq Whisper API" : "disabled (no GROQ_API_KEY)"}`);
 console.log(`Whisper model: ${GROQ_WHISPER_MODEL}`);
+console.log(`FFmpeg path: ${FFMPEG_PATH}`);
 console.log(`Voice responses (TTS): ${TTS_PROVIDER === "edge" ? `Edge TTS (${EDGE_TTS_VOICE} @ ${EDGE_TTS_SPEED}x)` : TTS_PROVIDER === "elevenlabs" && ELEVENLABS_API_KEY ? "ElevenLabs v3" : "Edge TTS (fallback)"}`);
 console.log("Thread support: enabled (Grammy auto-thread)");
 console.log(`Heartbeat: ${supabase ? "will start after boot" : "disabled (no Supabase)"}`);

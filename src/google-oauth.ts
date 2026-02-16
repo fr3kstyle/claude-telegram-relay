@@ -1,0 +1,324 @@
+/**
+ * Google OAuth 2.0 Handler
+ *
+ * Handles authentication for Gmail, Calendar, and Drive APIs.
+ * Supports multiple Google accounts.
+ *
+ * Usage:
+ * 1. Run: bun run src/google-oauth.ts
+ * 2. Visit the printed URL for each account
+ * 3. Authorize and copy the code
+ * 4. Tokens are saved to ~/.claude-relay/google-tokens/
+ */
+
+import { writeFile, readFile, mkdir } from "fs/promises";
+import { existsSync } from "fs";
+import { join, dirname } from "path";
+
+const RELAY_DIR = join(process.env.HOME || "~", ".claude-relay");
+const TOKENS_DIR = join(RELAY_DIR, "google-tokens");
+const CREDENTIALS_FILE = join(RELAY_DIR, "google-credentials.json");
+
+// Google OAuth endpoints
+const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const TOKEN_URL = "https://oauth2.googleapis.com/token";
+
+// Required scopes for Gmail, Calendar, and Drive
+const SCOPES = [
+  // Gmail
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/gmail.modify",
+  // Calendar
+  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/calendar.events",
+  // Drive
+  "https://www.googleapis.com/auth/drive",
+];
+
+interface Credentials {
+  web: {
+    client_id: string;
+    client_secret: string;
+    redirect_uris: string[];
+  };
+}
+
+interface TokenData {
+  access_token: string;
+  refresh_token: string;
+  scope: string;
+  token_type: string;
+  expiry_date: number;
+  email: string;
+}
+
+/**
+ * Load credentials from the JSON file downloaded from Google Cloud Console
+ */
+async function loadCredentials(): Promise<Credentials> {
+  if (!existsSync(CREDENTIALS_FILE)) {
+    throw new Error(
+      `Credentials file not found: ${CREDENTIALS_FILE}\n` +
+      `Download it from Google Cloud Console > APIs & Services > Credentials\n` +
+      `Save as: ${CREDENTIALS_FILE}`
+    );
+  }
+
+  const content = await readFile(CREDENTIALS_FILE, "utf-8");
+  return JSON.parse(content);
+}
+
+/**
+ * Save token for a specific account
+ */
+async function saveToken(email: string, tokenData: TokenData): Promise<void> {
+  await mkdir(TOKENS_DIR, { recursive: true });
+
+  // Sanitize email for filename
+  const safeEmail = email.replace(/[@.]/g, "_");
+  const tokenFile = join(TOKENS_DIR, `${safeEmail}.json`);
+
+  await writeFile(tokenFile, JSON.stringify(tokenData, null, 2));
+  console.log(`Token saved for ${email} → ${tokenFile}`);
+}
+
+/**
+ * Load token for a specific account
+ */
+export async function loadToken(email: string): Promise<TokenData | null> {
+  const safeEmail = email.replace(/[@.]/g, "_");
+  const tokenFile = join(TOKENS_DIR, `${safeEmail}.json`);
+
+  if (!existsSync(tokenFile)) {
+    return null;
+  }
+
+  const content = await readFile(tokenFile, "utf-8");
+  return JSON.parse(content);
+}
+
+/**
+ * Generate the authorization URL for a user to visit
+ */
+export async function getAuthUrl(email: string): Promise<string> {
+  const credentials = await loadCredentials();
+  const { client_id, redirect_uris } = credentials.web;
+
+  const params = new URLSearchParams({
+    client_id,
+    redirect_uri: redirect_uris[0],
+    response_type: "code",
+    scope: SCOPES.join(" "),
+    access_type: "offline",
+    prompt: "consent",
+    login_hint: email,
+    state: email, // Pass email in state to identify which account
+  });
+
+  return `${AUTH_URL}?${params.toString()}`;
+}
+
+/**
+ * Exchange authorization code for tokens
+ */
+export async function exchangeCodeForToken(
+  code: string,
+  email: string
+): Promise<TokenData> {
+  const credentials = await loadCredentials();
+  const { client_id, client_secret, redirect_uris } = credentials.web;
+
+  const response = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id,
+      client_secret,
+      redirect_uri: redirect_uris[0],
+      grant_type: "authorization_code",
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Token exchange failed: ${error}`);
+  }
+
+  const data = await response.json();
+
+  return {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    scope: data.scope,
+    token_type: data.token_type,
+    expiry_date: Date.now() + data.expires_in * 1000,
+    email,
+  };
+}
+
+/**
+ * Refresh an expired access token
+ */
+export async function refreshAccessToken(email: string): Promise<string> {
+  const credentials = await loadCredentials();
+  const tokenData = await loadToken(email);
+
+  if (!tokenData) {
+    throw new Error(`No token found for ${email}. Run OAuth setup first.`);
+  }
+
+  const { client_id, client_secret } = credentials.web;
+
+  const response = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      refresh_token: tokenData.refresh_token,
+      client_id,
+      client_secret,
+      grant_type: "refresh_token",
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Token refresh failed: ${error}`);
+  }
+
+  const data = await response.json();
+
+  // Update token data
+  tokenData.access_token = data.access_token;
+  tokenData.expiry_date = Date.now() + data.expires_in * 1000;
+
+  await saveToken(email, tokenData);
+
+  return tokenData.access_token;
+}
+
+/**
+ * Get a valid access token (refresh if needed)
+ */
+export async function getValidAccessToken(email: string): Promise<string> {
+  const tokenData = await loadToken(email);
+
+  if (!tokenData) {
+    throw new Error(`No token found for ${email}. Run OAuth setup first.`);
+  }
+
+  // Check if token is expired (with 5 minute buffer)
+  if (Date.now() >= tokenData.expiry_date - 5 * 60 * 1000) {
+    console.log(`[OAuth] Refreshing token for ${email}`);
+    return refreshAccessToken(email);
+  }
+
+  return tokenData.access_token;
+}
+
+/**
+ * Interactive OAuth setup - run this to authorize accounts
+ */
+async function setupOAuth(): Promise<void> {
+  console.log("\n" + "=".repeat(60));
+  console.log("Google OAuth Setup for Claude Agent");
+  console.log("=".repeat(60) + "\n");
+
+  // Check credentials file
+  if (!existsSync(CREDENTIALS_FILE)) {
+    console.log("ERROR: Credentials file not found!");
+    console.log(`\n1. Go to: https://console.cloud.google.com/apis/credentials`);
+    console.log(`2. Create OAuth client ID (Web application)`);
+    console.log(`3. Download the JSON file`);
+    console.log(`4. Save it to: ${CREDENTIALS_FILE}`);
+    console.log(`\nThen run this script again.`);
+    process.exit(1);
+  }
+
+  console.log("Credentials file found.");
+
+  const accounts = [
+    "Fr3kchy@gmail.com",
+    "fr3k@mcpintelligence.com.au",
+  ];
+
+  console.log(`\nAccounts to authorize: ${accounts.length}`);
+  accounts.forEach((email, i) => {
+    console.log(`  ${i + 1}. ${email}`);
+  });
+
+  console.log("\n" + "-".repeat(60));
+  console.log("INSTRUCTIONS:");
+  console.log("-".repeat(60));
+  console.log("For EACH account:");
+  console.log("  1. Click the URL below (or copy to browser)");
+  console.log("  2. Log in with that specific Google account");
+  console.log("  3. Grant permissions");
+  console.log("  4. You'll be redirected to localhost (that's OK)");
+  console.log("  5. Copy the 'code' parameter from the URL");
+  console.log("  6. Paste it here");
+  console.log("-".repeat(60) + "\n");
+
+  const readline = require("readline");
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const question = (prompt: string): Promise<string> =>
+    new Promise((resolve) => rl.question(prompt, resolve));
+
+  for (const email of accounts) {
+    console.log(`\n${"=".repeat(60)}`);
+    console.log(`Account: ${email}`);
+    console.log("=".repeat(60));
+
+    // Check if already authorized
+    const existingToken = await loadToken(email);
+    if (existingToken) {
+      const answer = await question(
+        `Token already exists. Re-authorize? (y/N): `
+      );
+      if (answer.toLowerCase() !== "y") {
+        console.log("Skipping...");
+        continue;
+      }
+    }
+
+    const authUrl = await getAuthUrl(email);
+    console.log(`\nVisit this URL:\n`);
+    console.log(authUrl);
+    console.log(`\n`);
+
+    const code = await question("Enter the authorization code: ");
+
+    if (!code.trim()) {
+      console.log("No code provided, skipping...");
+      continue;
+    }
+
+    try {
+      console.log("\nExchanging code for tokens...");
+      const tokenData = await exchangeCodeForToken(code.trim(), email);
+      await saveToken(email, tokenData);
+      console.log(`SUCCESS: ${email} authorized!`);
+    } catch (error) {
+      console.error(`FAILED: ${error}`);
+    }
+  }
+
+  rl.close();
+  console.log("\n" + "=".repeat(60));
+  console.log("OAuth Setup Complete!");
+  console.log("=".repeat(60));
+  console.log(`\nTokens saved to: ${TOKENS_DIR}`);
+  console.log("\nYou can now use Gmail, Calendar, and Drive APIs.");
+}
+
+// Run setup if executed directly
+if (import.meta.path === process.argv[1]) {
+  setupOAuth().catch(console.error);
+}
+
+export { SCOPES, TOKENS_DIR, CREDENTIALS_FILE };

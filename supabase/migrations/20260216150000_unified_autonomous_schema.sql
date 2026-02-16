@@ -52,7 +52,7 @@ CREATE INDEX IF NOT EXISTS idx_global_memory_pending_actions
   ON global_memory(priority DESC, created_at ASC)
   WHERE type = 'action' AND status IN ('active', 'pending');
 CREATE INDEX IF NOT EXISTS idx_global_memory_blocked
-  ON global_memory(updated_at DESC)
+  ON global_memory(created_at DESC)
   WHERE status = 'blocked';
 CREATE INDEX IF NOT EXISTS idx_global_memory_active_goals_hierarchy
   ON global_memory(priority DESC, created_at ASC)

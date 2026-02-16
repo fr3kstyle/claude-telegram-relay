@@ -70,10 +70,23 @@ Deno.serve(async (req) => {
     }
 
     // Update the row with the generated embedding
-    const { error: updateError } = await supabase
-      .from("global_memory")
+    // Try memory table first (primary), then global_memory (legacy)
+    let updateError = null;
+    const { error: memoryError } = await supabase
+      .from("memory")
       .update({ embedding: JSON.stringify(embedding) })
       .eq("id", record.id);
+
+    if (memoryError) {
+      // Fallback to global_memory if memory table fails
+      const { error: globalError } = await supabase
+        .from("global_memory")
+        .update({ embedding: JSON.stringify(embedding) })
+        .eq("id", record.id);
+      updateError = globalError;
+    } else {
+      updateError = null;
+    }
 
     if (updateError) {
       console.error("Supabase update error:", updateError);

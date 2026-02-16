@@ -18,7 +18,13 @@
     "setup:verify": "bun run setup/verify.ts",
     "migrate": "cp supabase/migrations/*.sql /tmp/migrations && echo 'Run migrations in Supabase dashboard'",
     "self-improve": "bun run src/self-improve.ts",
-    "improve:assess": "bun run src/self-improve.ts assess"
+    "improve:assess": "bun run src/self-improve.ts assess",
+    "improve:cycle": "bun run src/auto-improve.ts cycle",
+    "improve:predict": "bun run src/auto-improve.ts predict",
+    "improve:benchmark": "bun run src/auto-improve.ts benchmark",
+    "improve:doc": "bun run src/auto-improve.ts doc",
+    "reflexion": "bun run src/reflexion.ts",
+    "experience": "bun run src/experience-replay.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.95.3",

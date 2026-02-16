@@ -517,10 +517,15 @@ async function runAgentCycle(): Promise<void> {
       lowerOutput.includes("urgent") ||
       lowerOutput.includes("critical") ||
       lowerOutput.includes("error") ||
-      lowerOutput.includes("blocked")
+      lowerOutput.includes("blocked") ||
+      lowerOutput.includes("cycle") ||
+      lowerOutput.includes("summary")
     ) {
-      // Send notification about important events
-      const notification = `[Agent Alert]\n\n${result.output.substring(0, 500)}...`;
+      // Send notification about important events (Telegram limit is 4096 chars)
+      const maxLen = 4000;
+      const notification = result.output.length > maxLen
+        ? `[Agent Alert]\n\n${result.output.substring(0, maxLen)}\n\n... (truncated)`
+        : `[Agent Alert]\n\n${result.output}`;
       await sendTelegramNotification(notification);
     }
 
