@@ -7,6 +7,12 @@
 export * from './types.ts';
 export { GmailProvider, createGmailProvider } from './gmail-provider.ts';
 export {
+  EmailProviderFactory,
+  getEmailProviderFactory,
+  createEmailProvider as createProviderFromFactory,
+  getAuthorizedProviders,
+} from './provider-factory.ts';
+export {
   fetchEmailContext,
   formatEmailContextForHeartbeat,
   hasUrgentEmails,
@@ -14,28 +20,20 @@ export {
 export type { EmailContextOptions, EmailContextResult, EmailSummary } from './email-context.ts';
 
 import { GmailProvider, createGmailProvider } from './gmail-provider.ts';
+import { getEmailProviderFactory } from './provider-factory.ts';
 import { discoverAuthorizedAccounts } from '../google-oauth.ts';
 import type { EmailProvider, EmailProviderType } from './types.ts';
 
 /**
  * Create an email provider based on type
+ *
+ * Uses the EmailProviderFactory singleton for provider creation.
  */
 export function createEmailProvider(
   type: EmailProviderType,
   emailAddress: string
 ): EmailProvider {
-  switch (type) {
-    case 'gmail':
-      return createGmailProvider(emailAddress);
-    case 'outlook':
-      throw new Error('Outlook provider not yet implemented');
-    case 'imap':
-      throw new Error('IMAP provider not yet implemented');
-    case 'smtp':
-      throw new Error('SMTP provider not yet implemented');
-    default:
-      throw new Error(`Unknown email provider type: ${type}`);
-  }
+  return getEmailProviderFactory().createProvider(type, emailAddress);
 }
 
 /**
@@ -44,11 +42,12 @@ export function createEmailProvider(
 export async function getAuthorizedGmailProviders(): Promise<GmailProvider[]> {
   // Discover accounts dynamically from token files
   const accounts = await discoverAuthorizedAccounts();
+  const factory = getEmailProviderFactory();
   const providers: GmailProvider[] = [];
 
   for (const email of accounts) {
-    const provider = createGmailProvider(email);
     try {
+      const provider = factory.createProvider('gmail', email) as GmailProvider;
       if (await provider.isAuthenticated()) {
         providers.push(provider);
       }
