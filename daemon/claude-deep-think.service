@@ -1,0 +1,29 @@
+[Unit]
+Description=Claude Deep Think Engine
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=radxa
+WorkingDirectory=/home/radxa/claude-telegram-relay
+ExecStart=/home/radxa/.bun/bin/bun run src/deep-think.ts
+
+# Environment
+Environment=HOME=/home/radxa
+Environment=PATH=/home/radxa/.npm-global/bin:/home/radxa/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DEEP_THINK_IDLE_MINUTES=10
+Environment=DEEP_THINK_MIN_GOALS=2
+Environment=CLAUDE_PATH=/home/radxa/.npm-global/bin/claude
+EnvironmentFile=/home/radxa/claude-telegram-relay/.env
+
+# Logging
+StandardOutput=append:/home/radxa/claude-telegram-relay/logs/deep-think.log
+StandardError=append:/home/radxa/claude-telegram-relay/logs/deep-think.error.log
+
+# Resource limits
+MemoryMax=500M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+[Unit]
+Description=Claude Autonomous Agent Loop
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=radxa
+WorkingDirectory=/home/radxa/claude-telegram-relay
+ExecStart=/home/radxa/.bun/bin/bun run src/agent-loop.ts
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+# Environment
+Environment=HOME=/home/radxa
+Environment=PATH=/home/radxa/.npm-global/bin:/home/radxa/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=AGENT_LOOP_INTERVAL=180000
+Environment=CLAUDE_PATH=/home/radxa/.npm-global/bin/claude
+EnvironmentFile=/home/radxa/claude-telegram-relay/.env
+
+# Logging
+StandardOutput=append:/home/radxa/claude-telegram-relay/logs/agent-loop.log
+StandardError=append:/home/radxa/claude-telegram-relay/logs/agent-loop.error.log
+
+# Resource limits
+MemoryMax=500M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target

@@ -55,6 +55,9 @@ const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "";
+const TTS_PROVIDER = process.env.TTS_PROVIDER || (ELEVENLABS_API_KEY ? "elevenlabs" : "edge");
+const EDGE_TTS_VOICE = process.env.EDGE_TTS_VOICE || "en-AU-Neural2"; // Natural Australian voice
+const EDGE_TTS_SPEED = process.env.EDGE_TTS_SPEED || "1.3";
 
 const TELEGRAM_GROUP_ID = process.env.TELEGRAM_GROUP_ID || "";
 
@@ -876,14 +879,16 @@ function computeNextRun(job: CronJob): string | null {
   }
 
   if (job.schedule_type === "interval") {
-    const match = job.schedule.match(/every\s+(?:(\d+)h)?(?:(\d+)m)?/i);
+    // Support: every 1d, every 7d, every 2h, every 30m, every 1d12h, etc.
+    const match = job.schedule.match(/every\s+(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?/i);
     if (!match) {
       console.error(`[Cron] Invalid interval format for job ${job.id}: ${job.schedule}`);
       return null;
     }
-    const hours = parseInt(match[1] || "0", 10);
-    const minutes = parseInt(match[2] || "0", 10);
-    const intervalMs = (hours * 60 + minutes) * 60 * 1000;
+    const days = parseInt(match[1] || "0", 10);
+    const hours = parseInt(match[2] || "0", 10);
+    const minutes = parseInt(match[3] || "0", 10);
+    const intervalMs = ((days * 24 + hours) * 60 + minutes) * 60 * 1000;
 
     if (intervalMs === 0) {
       console.error(`[Cron] Zero interval for job ${job.id}: ${job.schedule}`);
@@ -1804,11 +1809,53 @@ async function transcribeAudio(audioPath: string): Promise<string> {
 
 const TTS_MAX_CHARS = 4500;
 
-async function textToSpeech(text: string): Promise<Buffer | null> {
+async function textToSpeechEdge(text: string): Promise<Buffer | null> {
+  try {
+    const ttsText = text.length > TTS_MAX_CHARS
+      ? text.substring(0, TTS_MAX_CHARS) + "..."
+      : text;
+
+    // Create temp file for output
+    const tempFile = join(RELAY_DIR, "temp", `tts-${Date.now()}.mp3`);
+    await mkdir(dirname(tempFile), { recursive: true });
+
+    // Run edge-tts
+    const proc = spawn({
+      cmd: [
+        "edge-tts",
+        "--voice", EDGE_TTS_VOICE,
+        "--rate", `+${Math.round((parseFloat(EDGE_TTS_SPEED) - 1) * 100)}%`,
+        "--text", ttsText,
+        "--write-media", tempFile,
+      ],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      console.error(`Edge TTS error: ${stderr}`);
+      return null;
+    }
+
+    // Read the generated file
+    const audioBuffer = await readFile(tempFile);
+
+    // Cleanup
+    await unlink(tempFile).catch(() => {});
+
+    return audioBuffer;
+  } catch (error) {
+    console.error("Edge TTS error:", error);
+    return null;
+  }
+}
+
+async function textToSpeechElevenLabs(text: string): Promise<Buffer | null> {
   if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) return null;
 
   try {
-    // Truncate if over ElevenLabs limit
     const ttsText = text.length > TTS_MAX_CHARS
       ? text.substring(0, TTS_MAX_CHARS) + "..."
       : text;
@@ -1842,9 +1889,19 @@ async function textToSpeech(text: string): Promise<Buffer | null> {
 
     return Buffer.from(await response.arrayBuffer());
   } catch (error) {
-    console.error("TTS error:", error);
+    console.error("ElevenLabs TTS error:", error);
     return null;
   }
+}
+
+async function textToSpeech(text: string): Promise<Buffer | null> {
+  if (TTS_PROVIDER === "edge") {
+    return textToSpeechEdge(text);
+  } else if (TTS_PROVIDER === "elevenlabs" && ELEVENLABS_API_KEY) {
+    return textToSpeechElevenLabs(text);
+  }
+  // Fallback to Edge TTS (free)
+  return textToSpeechEdge(text);
 }
 
 // ============================================================
@@ -3110,7 +3167,7 @@ console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
 console.log(`Supabase: ${supabase ? "connected" : "disabled"}`);
 console.log(`Voice transcription: ${GROQ_API_KEY ? "Groq Whisper API" : "disabled (no GROQ_API_KEY)"}`);
 console.log(`Whisper model: ${GROQ_WHISPER_MODEL}`);
-console.log(`Voice responses (TTS): ${ELEVENLABS_API_KEY ? "ElevenLabs v3" : "disabled"}`);
+console.log(`Voice responses (TTS): ${TTS_PROVIDER === "edge" ? `Edge TTS (${EDGE_TTS_VOICE} @ ${EDGE_TTS_SPEED}x)` : TTS_PROVIDER === "elevenlabs" && ELEVENLABS_API_KEY ? "ElevenLabs v3" : "Edge TTS (fallback)"}`);
 console.log("Thread support: enabled (Grammy auto-thread)");
 console.log(`Heartbeat: ${supabase ? "will start after boot" : "disabled (no Supabase)"}`);
 console.log(`Heartbeat routing: ${TELEGRAM_GROUP_ID ? `group ${TELEGRAM_GROUP_ID} (topic thread)` : "DM (no TELEGRAM_GROUP_ID)"}`);
