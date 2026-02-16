@@ -279,9 +279,11 @@ async function callClaudeWithRetry(
       console.error(`[Attempt ${attempt}] Spawn error:`, error);
     }
 
-    // Wait before retry
+    // Wait before retry with exponential backoff (2s → 4s → 8s)
     if (attempt < maxRetries) {
-      await new Promise(r => setTimeout(r, 2000));
+      const delay = Math.min(2000 * Math.pow(2, attempt - 1), 8000); // Cap at 8s
+      console.log(`[AGENT] Waiting ${delay}ms before retry...`);
+      await new Promise(r => setTimeout(r, delay));
     }
   }
 
