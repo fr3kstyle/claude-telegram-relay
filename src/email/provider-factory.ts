@@ -7,6 +7,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { GmailProvider, createGmailProvider } from './gmail-provider.ts';
+import { OutlookProvider, createOutlookProvider } from './outlook-provider.ts';
 import type {
   EmailProvider,
   EmailProviderType,
@@ -46,6 +47,7 @@ export class EmailProviderFactory {
   constructor() {
     // Register built-in providers
     this.registerGmailProvider();
+    this.registerOutlookProvider();
   }
 
   /**
@@ -61,6 +63,25 @@ export class EmailProviderFactory {
         canModifyLabels: true,
         canMoveToFolder: true,
         supportsThreads: true,
+        supportsDrafts: true,
+        maxAttachmentSize: 25 * 1024 * 1024, // 25MB
+      },
+    });
+  }
+
+  /**
+   * Register Outlook provider
+   */
+  private registerOutlookProvider(): void {
+    this.register({
+      type: 'outlook',
+      factory: createOutlookProvider,
+      capabilities: {
+        canSend: true,
+        canSearch: true,
+        canModifyLabels: false, // Outlook uses folders, not labels
+        canMoveToFolder: true,
+        supportsThreads: true, // Via conversationId
         supportsDrafts: true,
         maxAttachmentSize: 25 * 1024 * 1024, // 25MB
       },
@@ -139,6 +160,13 @@ export class EmailProviderFactory {
    */
   getGmailProvider(email: string): GmailProvider {
     return this.createProvider('gmail', email) as GmailProvider;
+  }
+
+  /**
+   * Get or create an Outlook provider
+   */
+  getOutlookProvider(email: string): OutlookProvider {
+    return this.createProvider('outlook', email) as OutlookProvider;
   }
 
   /**
