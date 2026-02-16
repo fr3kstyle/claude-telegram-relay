@@ -1312,6 +1312,69 @@ async function checkDiskUsage(): Promise<{
   }
 }
 
+/**
+ * Run goal hygiene during heartbeat - auto-archive orphan actions older than threshold.
+ * This keeps the memory table clean and prevents stale actions from accumulating.
+ */
+async function runGoalHygiene(daysThreshold: number): Promise<{
+  orphansArchived: number;
+  malformedDeleted: number;
+  hygieneReport: Record<string, unknown> | null;
+}> {
+  try {
+    // Get hygiene report first
+    const { data: hygieneData, error: hygieneError } = await supabase.rpc("goal_hygiene", {
+      p_days_stale: daysThreshold,
+      p_similarity_threshold: 0.8,
+    });
+
+    if (hygieneError) {
+      console.log("Goal hygiene: RPC not available or error:", hygieneError.message);
+      return { orphansArchived: 0, malformedDeleted: 0, hygieneReport: null };
+    }
+
+    const report = hygieneData as Record<string, unknown>;
+    const orphanActions = (report?.orphan_actions as Array<{ id: string }>) || [];
+
+    // Archive orphan actions older than threshold
+    let orphansArchived = 0;
+    if (orphanActions.length > 0) {
+      const { error: archiveError } = await supabase.rpc("archive_stale_items", {
+        p_days_stale: daysThreshold,
+        p_dry_run: false,
+      });
+
+      if (archiveError) {
+        console.log("Goal hygiene: failed to archive stale items:", archiveError.message);
+      } else {
+        orphansArchived = orphanActions.length;
+        console.log(`Goal hygiene: archived ${orphansArchived} orphan action(s)`);
+      }
+    }
+
+    // Delete malformed entries (always safe to clean)
+    let malformedDeleted = 0;
+    const malformed = (report?.malformed as Array<{ id: string }>) || [];
+    if (malformed.length > 0) {
+      const { error: deleteError } = await supabase.rpc("delete_malformed_entries", {
+        p_dry_run: false,
+      });
+
+      if (deleteError) {
+        console.log("Goal hygiene: failed to delete malformed:", deleteError.message);
+      } else {
+        malformedDeleted = malformed.length;
+        console.log(`Goal hygiene: deleted ${malformedDeleted} malformed entr(y/ies)`);
+      }
+    }
+
+    return { orphansArchived, malformedDeleted, hygieneReport: report };
+  } catch (error) {
+    console.error("Goal hygiene error:", error);
+    return { orphansArchived: 0, malformedDeleted: 0, hygieneReport: null };
+  }
+}
+
 async function heartbeatTick(): Promise<void> {
   if (heartbeatRunning) {
     console.log("Heartbeat: skipping (previous tick still running)");
@@ -1375,6 +1438,19 @@ async function heartbeatTick(): Promise<void> {
         error: String(e),
       });
       console.log(`Heartbeat: Supabase connection error: ${e}`);
+    }
+
+    // Step 0.7: Run goal hygiene - auto-archive orphan actions older than 7 days
+    // Run weekly (Sunday) or when there are known issues
+    const shouldRunHygiene = new Date().getDay() === 0; // Sunday
+    if (shouldRunHygiene) {
+      const hygieneResult = await runGoalHygiene(7);
+      if (hygieneResult.orphansArchived > 0 || hygieneResult.malformedDeleted > 0) {
+        await logEventV2("goal_hygiene", "Auto-archived orphan actions", {
+          orphans_archived: hygieneResult.orphansArchived,
+          malformed_deleted: hygieneResult.malformedDeleted,
+        });
+      }
     }
 
     // Step 1: Read HEARTBEAT.md checklist
