@@ -46,14 +46,17 @@ async function getAuthorizedProviders(accounts?: string[]): Promise<Array<{ emai
   // If specific accounts requested, use those
   if (accounts && accounts.length > 0) {
     const providers: Array<{ email: string; provider: EmailProvider; providerType: string }> = [];
+    const allAccounts = await factory.discoverAccounts();
+    const accountMap = new Map(allAccounts.map(a => [a.emailAddress, a]));
+
     for (const email of accounts) {
       const provider = await factory.getProvider(email);
       if (provider) {
-        const accountInfo = await factory.discoverAccount(email);
+        const accountInfo = accountMap.get(email);
         providers.push({
           email,
           provider,
-          providerType: accountInfo?.providerType || 'unknown'
+          providerType: accountInfo?.providerType || 'gmail' // Default to gmail for fallback
         });
       }
     }
