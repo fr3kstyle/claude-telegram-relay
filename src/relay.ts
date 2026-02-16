@@ -132,6 +132,10 @@ async function killOrphanedProcesses(claudePid: number): Promise<void> {
 
     if (pidsToKill.length > 0) {
       console.log(`Cleaned up ${pidsToKill.length} orphaned process(es) after timeout`);
+      await logEventV2("orphan_process_cleanup", `Cleaned up ${pidsToKill.length} orphaned processes`, {
+        pids: pidsToKill,
+        parent_claude_pid: claudePid
+      });
     }
   } catch {
     // Best-effort cleanup — don't let this break the flow
