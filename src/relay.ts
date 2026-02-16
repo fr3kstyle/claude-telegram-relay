@@ -496,9 +496,9 @@ async function getActiveGoals(): Promise<
       );
     }
 
-    // Fallback: query memory table directly
+    // Fallback: query global_memory table directly
     const { data: memoryGoals } = await supabase
-      .from("memory")
+      .from("global_memory")
       .select("content, deadline, priority")
       .eq("type", "goal")
       .eq("status", "active")
