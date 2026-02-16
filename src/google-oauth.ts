@@ -336,6 +336,45 @@ async function cli(): Promise<void> {
   }
 }
 
+/**
+ * Discover all authorized accounts by scanning the tokens directory
+ */
+export async function discoverAuthorizedAccounts(): Promise<string[]> {
+  if (!existsSync(TOKENS_DIR)) {
+    return [];
+  }
+
+  const { readdir } = await import('fs/promises');
+  const files = await readdir(TOKENS_DIR);
+
+  const accounts: string[] = [];
+  for (const file of files) {
+    if (file.endsWith('.json')) {
+      // Convert filename back to email: Fr3kchy_gmail_com.json -> Fr3kchy@gmail.com
+      const safeEmail = file.replace('.json', '');
+      const email = safeEmail
+        .replace(/_([^_]+)_([^_]+)$/, '@$1.$2') // Last two underscores become @ and .
+        .replace(/_/g, ''); // Remove remaining underscores (from dots in local part)
+
+      // Verify the token is valid by loading it
+      const token = await loadToken(email);
+      if (token) {
+        accounts.push(email);
+      }
+    }
+  }
+
+  return accounts;
+}
+
+/**
+ * Check if an account has a valid token (even if expired - refresh token exists)
+ */
+export async function hasToken(email: string): Promise<boolean> {
+  const token = await loadToken(email);
+  return token !== null;
+}
+
 // Run CLI if executed directly
 if (import.meta.path === process.argv[1] || (process.argv[1] && process.argv[1].endsWith("google-oauth.ts"))) {
   cli().catch(console.error);

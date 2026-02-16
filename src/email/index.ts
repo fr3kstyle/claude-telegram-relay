@@ -14,6 +14,7 @@ export {
 export type { EmailContextOptions, EmailContextResult, EmailSummary } from './email-context.ts';
 
 import { GmailProvider, createGmailProvider } from './gmail-provider.ts';
+import { discoverAuthorizedAccounts } from '../google-oauth.ts';
 import type { EmailProvider, EmailProviderType } from './types.ts';
 
 /**
@@ -38,10 +39,11 @@ export function createEmailProvider(
 }
 
 /**
- * Get all authorized Gmail providers
+ * Get all authorized Gmail providers by discovering accounts from tokens directory
  */
 export async function getAuthorizedGmailProviders(): Promise<GmailProvider[]> {
-  const accounts = ['Fr3kchy@gmail.com', 'fr3k@mcpintelligence.com.au'];
+  // Discover accounts dynamically from token files
+  const accounts = await discoverAuthorizedAccounts();
   const providers: GmailProvider[] = [];
 
   for (const email of accounts) {
@@ -51,9 +53,16 @@ export async function getAuthorizedGmailProviders(): Promise<GmailProvider[]> {
         providers.push(provider);
       }
     } catch {
-      // Skip accounts that aren't authorized
+      // Skip accounts that aren't authorized or have expired tokens
     }
   }
 
   return providers;
+}
+
+/**
+ * Get list of discovered email accounts (for display/debugging)
+ */
+export async function getDiscoveredAccounts(): Promise<string[]> {
+  return discoverAuthorizedAccounts();
 }
