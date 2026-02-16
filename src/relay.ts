@@ -1356,6 +1356,22 @@ async function heartbeatTick(): Promise<void> {
       }
     }
 
+    // Step 0.6: Check Supabase connectivity (log on failure)
+    try {
+      const { error: healthError } = await supabase.from("threads").select("id").limit(1);
+      if (healthError) {
+        await logEventV2("supabase_health", "Supabase health check failed", {
+          error: healthError.message,
+        });
+        console.log(`Heartbeat: Supabase health check failed: ${healthError.message}`);
+      }
+    } catch (e) {
+      await logEventV2("supabase_health", "Supabase connection error", {
+        error: String(e),
+      });
+      console.log(`Heartbeat: Supabase connection error: ${e}`);
+    }
+
     // Step 1: Read HEARTBEAT.md checklist
     const checklist = await readHeartbeatChecklist();
     if (!checklist) {

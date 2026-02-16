@@ -102,30 +102,6 @@ async function searchTextLocal(
   const results: Array<{ content: string; type: string; similarity: number }> = [];
   const seen = new Set<string>();
 
-  // Search memory table with first word
-  try {
-    const word = words[0] || query;
-    const { data } = await supabase
-      .from("memory")
-      .select("content, type")
-      .ilike("content", `%${word}%`)
-      .in("type", ["fact", "goal", "strategy", "preference", "action"])
-      .eq("status", "active")
-      .limit(limit);
-
-    if (data) {
-      for (const r of data) {
-        const key = r.content.substring(0, 50);
-        if (!seen.has(key)) {
-          seen.add(key);
-          results.push({ content: r.content, type: r.type, similarity: 0.4 });
-        }
-      }
-    }
-  } catch (e) {
-    // Ignore
-  }
-
   // Search global_memory table
   try {
     const word = words[0] || query;
@@ -180,27 +156,6 @@ export async function backfillEmbeddings(batchSize: number = 10): Promise<number
           .eq("id", mem.id);
         count++;
         console.log(`[Embed] Backfilled: ${mem.content.substring(0, 50)}...`);
-      }
-    }
-  }
-
-  // Also check memory table
-  const { data: memTableMemories } = await supabase
-    .from("memory")
-    .select("id, content")
-    .is("embedding", null)
-    .limit(batchSize);
-
-  if (memTableMemories && memTableMemories.length > 0) {
-    for (const mem of memTableMemories) {
-      const embedding = await generateEmbedding(mem.content);
-      if (embedding) {
-        await supabase
-          .from("memory")
-          .update({ embedding })
-          .eq("id", mem.id);
-        count++;
-        console.log(`[Embed] Backfilled (memory): ${mem.content.substring(0, 50)}...`);
       }
     }
   }
