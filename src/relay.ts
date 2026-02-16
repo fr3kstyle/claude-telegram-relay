@@ -404,7 +404,14 @@ async function insertMemory(
     if (priority !== undefined) {
       row.priority = priority;
     }
-    const { error } = await supabase.from("global_memory").insert(row);
+    // Use memory table (has full schema with parent_id, status, weight)
+    // rather than global_memory (basic schema only)
+    const rowWithDefaults = {
+      ...row,
+      status: 'active',
+      weight: 1.0
+    };
+    const { error } = await supabase.from("memory").insert(rowWithDefaults);
     if (error) {
       console.error("insertMemory error:", error);
       return false;
@@ -426,7 +433,26 @@ async function deleteMemory(searchText: string): Promise<boolean> {
     return false;
   }
   try {
-    // Try global_memory first
+    // Try memory table first (primary table with full schema)
+    const { data: memoryItems, error: memErr } = await supabase
+      .from("memory")
+      .select("id, content, type")
+      .in("type", ["fact", "goal", "preference", "strategy", "action", "reflection"])
+      .eq("status", "active")
+      .limit(500);
+
+    if (!memErr && memoryItems) {
+      const match = memoryItems.find((m: { id: string; content: string }) =>
+        m.content.toLowerCase().includes(searchText.toLowerCase())
+      );
+      if (match) {
+        await supabase.from("memory").delete().eq("id", match.id);
+        console.log(`Forgot memory (memory) [${(match as any).type}]: ${match.content}`);
+        return true;
+      }
+    }
+
+    // Fallback: try global_memory
     const { data: globalItems, error: globalErr } = await supabase
       .from("global_memory")
       .select("id, content, type")
@@ -444,26 +470,7 @@ async function deleteMemory(searchText: string): Promise<boolean> {
       }
     }
 
-    // Try memory table as fallback
-    const { data: memoryItems, error: memErr } = await supabase
-      .from("memory")
-      .select("id, content, type")
-      .in("type", ["fact", "goal", "preference", "strategy", "action", "reflection"])
-      .eq("status", "active")
-      .limit(200);
-
-    if (!memErr && memoryItems) {
-      const match = memoryItems.find((m: { id: string; content: string }) =>
-        m.content.toLowerCase().includes(searchText.toLowerCase())
-      );
-      if (match) {
-        await supabase.from("memory").delete().eq("id", match.id);
-        console.log(`Forgot memory (memory) [${(match as any).type}]: ${match.content}`);
-        return true;
-      }
-    }
-
-    const total = (globalItems?.length || 0) + (memoryItems?.length || 0);
+    const total = (memoryItems?.length || 0) + (globalItems?.length || 0);
     console.warn(`deleteMemory: no match found for "${searchText}" (searched ${total} entries)`);
     return false;
   } catch (e) {
@@ -517,36 +524,15 @@ async function completeGoal(searchText: string): Promise<boolean> {
   if (!supabase) return false;
   if (!searchText || searchText.length > 200) return false;
   try {
-    // Try global_memory first
-    const { data: globalGoals } = await supabase
-      .from("global_memory")
-      .select("id, content")
-      .eq("type", "goal")
-      .is("completed_at", null)
-      .limit(100);
-
-    let match = globalGoals?.find((g: { id: string; content: string }) =>
-      g.content.toLowerCase().includes(searchText.toLowerCase())
-    );
-
-    if (match) {
-      await supabase
-        .from("global_memory")
-        .update({ type: "completed_goal", completed_at: new Date().toISOString() })
-        .eq("id", match.id);
-      console.log(`Goal completed (global_memory): ${match.content}`);
-      return true;
-    }
-
-    // Try memory table as fallback
+    // Try memory table first (primary table with full schema)
     const { data: memoryGoals } = await supabase
       .from("memory")
       .select("id, content")
       .eq("type", "goal")
       .eq("status", "active")
-      .limit(100);
+      .limit(200);
 
-    match = memoryGoals?.find((g: { id: string; content: string }) =>
+    let match = memoryGoals?.find((g: { id: string; content: string }) =>
       g.content.toLowerCase().includes(searchText.toLowerCase())
     );
 
@@ -556,6 +542,27 @@ async function completeGoal(searchText: string): Promise<boolean> {
         .update({ type: "completed_goal", status: "completed" })
         .eq("id", match.id);
       console.log(`Goal completed (memory): ${match.content}`);
+      return true;
+    }
+
+    // Fallback: try global_memory
+    const { data: globalGoals } = await supabase
+      .from("global_memory")
+      .select("id, content")
+      .eq("type", "goal")
+      .is("completed_at", null)
+      .limit(100);
+
+    match = globalGoals?.find((g: { id: string; content: string }) =>
+      g.content.toLowerCase().includes(searchText.toLowerCase())
+    );
+
+    if (match) {
+      await supabase
+        .from("global_memory")
+        .update({ type: "completed_goal", completed_at: new Date().toISOString() })
+        .eq("id", match.id);
+      console.log(`Goal completed (global_memory): ${match.content}`);
       return true;
     }
 
