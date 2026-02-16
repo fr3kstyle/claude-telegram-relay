@@ -6,6 +6,12 @@
 
 export * from './types.ts';
 export { GmailProvider, createGmailProvider } from './gmail-provider.ts';
+export {
+  fetchEmailContext,
+  formatEmailContextForHeartbeat,
+  hasUrgentEmails,
+} from './email-context.ts';
+export type { EmailContextOptions, EmailContextResult, EmailSummary } from './email-context.ts';
 
 import { GmailProvider, createGmailProvider } from './gmail-provider.ts';
 import type { EmailProvider, EmailProviderType } from './types.ts';
