@@ -371,8 +371,12 @@ export class EmailProviderFactory {
       console.warn(`[ProviderFactory] Could not delete token file: ${err}`);
     }
 
-    // Remove from cache
-    this.providerCache.delete(normalizedEmail);
+    // Remove from instance cache (clear all providers for this email)
+    for (const key of this.instances.keys()) {
+      if (key.endsWith(`:${normalizedEmail}`)) {
+        this.instances.delete(key);
+      }
+    }
 
     // Mark as inactive in database (or delete entirely)
     if (!db) {
