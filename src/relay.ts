@@ -51,13 +51,14 @@ const SUPABASE_KEY =
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const GROQ_WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-large-v3-turbo";
-const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
+const FFMPEG_PATH = process.env.FFMPEG_PATH || "/usr/bin/ffmpeg";
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "";
 const TTS_PROVIDER = process.env.TTS_PROVIDER || (ELEVENLABS_API_KEY ? "elevenlabs" : "edge");
-const EDGE_TTS_VOICE = process.env.EDGE_TTS_VOICE || "en-AU-Neural2"; // Natural Australian voice
+const EDGE_TTS_VOICE = process.env.EDGE_TTS_VOICE || "en-US-AriaNeural";
 const EDGE_TTS_SPEED = process.env.EDGE_TTS_SPEED || "1.3";
+const BRAVE_API_KEY = process.env.BRAVE_API_KEY || "";
 
 const TELEGRAM_GROUP_ID = process.env.TELEGRAM_GROUP_ID || "";
 
