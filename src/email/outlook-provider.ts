@@ -215,6 +215,13 @@ export class OutlookProvider implements EmailProvider {
       headers: { ...headers, ...options?.headers },
     });
 
+    // Log rate limit headers for observability (Microsoft uses different header names)
+    const rateLimit = response.headers.get('x-ratelimit-limit') || response.headers.get('ratecontrol-limit');
+    const rateRemaining = response.headers.get('x-ratelimit-remaining') || response.headers.get('ratecontrol-remaining');
+    if (rateLimit || rateRemaining) {
+      console.log(`[Graph API] Rate limit: ${rateRemaining}/${rateLimit} remaining`);
+    }
+
     if (!response.ok) {
       const error = await response.text();
       // Token might be expired - invalidate and retry

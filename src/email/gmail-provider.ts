@@ -287,6 +287,13 @@ export class GmailProvider implements EmailProvider {
       headers: { ...headers, ...options?.headers },
     });
 
+    // Log rate limit headers for observability
+    const rateLimit = response.headers.get('x-ratelimit-limit');
+    const rateRemaining = response.headers.get('x-ratelimit-remaining');
+    if (rateLimit || rateRemaining) {
+      console.log(`[Gmail API] Rate limit: ${rateRemaining}/${rateLimit} remaining`);
+    }
+
     if (!response.ok) {
       const error = await response.text();
       // Token might be expired - invalidate and retry
