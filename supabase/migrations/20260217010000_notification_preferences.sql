@@ -223,3 +223,21 @@ $$ LANGUAGE plpgsql;
 COMMENT ON TABLE notification_preferences IS 'User-configurable notification preferences with quiet hours support';
 COMMENT ON FUNCTION get_notification_preferences IS 'Get preferences for a user, returns defaults if not found';
 COMMENT ON FUNCTION is_notification_allowed IS 'Check if a notification should be sent (considers quiet hours)';
+
+-- ============================================================
+-- 5. ROW LEVEL SECURITY
+-- ============================================================
+ALTER TABLE notification_preferences ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "service_role_all_notification_prefs" ON notification_preferences FOR ALL
+  TO service_role USING (true) WITH CHECK (true);
+
+-- ============================================================
+-- 6. LOG MIGRATION
+-- ============================================================
+INSERT INTO logs_v2 (event, message, metadata)
+VALUES (
+  'schema_migration',
+  'Notification preferences schema v2.7 applied',
+  '{"version": "20260217010000", "features": ["notification_preferences", "quiet_hours", "type_preferences", "helper_rpcs"]}'::jsonb
+);
