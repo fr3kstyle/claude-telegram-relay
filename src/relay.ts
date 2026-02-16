@@ -99,19 +99,31 @@ function sanitizeFilename(name: string): string {
 const CLAUDE_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 min of no output = stuck
 const MAX_OUTPUT_SIZE = 1024 * 1024; // 1MB
 
-// Circuit breakers for external APIs
+// Circuit breakers for external APIs (with observability logging)
 const groqCircuitBreaker = circuitBreakers.get("groq-whisper", {
   failureThreshold: 3,
   resetTimeout: 60000, // 1 minute
-  onOpen: (name, failures) => console.log(`[CircuitBreaker:${name}] OPEN after ${failures} failures - Groq API unavailable`),
-  onClose: (name) => console.log(`[CircuitBreaker:${name}] CLOSED - Groq API recovered`),
+  onOpen: (name, failures) => {
+    console.log(`[CircuitBreaker:${name}] OPEN after ${failures} failures - Groq API unavailable`);
+    logEventV2("circuit_open", `Circuit breaker OPEN: ${name}`, { service: "groq", failures }).catch(() => {});
+  },
+  onClose: (name) => {
+    console.log(`[CircuitBreaker:${name}] CLOSED - Groq API recovered`);
+    logEventV2("circuit_close", `Circuit breaker CLOSED: ${name}`, { service: "groq" }).catch(() => {});
+  },
 });
 
 const elevenLabsCircuitBreaker = circuitBreakers.get("elevenlabs-tts", {
   failureThreshold: 3,
   resetTimeout: 60000, // 1 minute
-  onOpen: (name, failures) => console.log(`[CircuitBreaker:${name}] OPEN after ${failures} failures - ElevenLabs TTS unavailable`),
-  onClose: (name) => console.log(`[CircuitBreaker:${name}] CLOSED - ElevenLabs TTS recovered`),
+  onOpen: (name, failures) => {
+    console.log(`[CircuitBreaker:${name}] OPEN after ${failures} failures - ElevenLabs TTS unavailable`);
+    logEventV2("circuit_open", `Circuit breaker OPEN: ${name}`, { service: "elevenlabs", failures }).catch(() => {});
+  },
+  onClose: (name) => {
+    console.log(`[CircuitBreaker:${name}] CLOSED - ElevenLabs TTS recovered`);
+    logEventV2("circuit_close", `Circuit breaker CLOSED: ${name}`, { service: "elevenlabs" }).catch(() => {});
+  },
 });
 
 // Kill orphaned child processes left behind after Claude CLI timeout.
@@ -1549,6 +1561,27 @@ async function heartbeatTick(): Promise<void> {
         error: String(e),
       });
       console.log(`Heartbeat: Supabase connection error: ${e}`);
+    }
+
+    // Step 0.65: Log circuit breaker stats (log if any open or on Sunday for full stats)
+    const breakerStats = circuitBreakers.getAllStats();
+    const hasOpenCircuits = breakerStats.some(s => s.state === 'open');
+    const shouldLogBreakers = hasOpenCircuits || new Date().getDay() === 0;
+    if (shouldLogBreakers) {
+      await logEventV2("circuit_breakers", "Circuit breaker health check", {
+        breakers: breakerStats.map(s => ({
+          name: s.name,
+          state: s.state,
+          total_calls: s.totalCalls,
+          total_failures: s.totalFailures,
+          last_failure: s.lastFailure?.toISOString(),
+        })),
+        has_open: hasOpenCircuits,
+      });
+      if (hasOpenCircuits) {
+        const openCircuits = breakerStats.filter(s => s.state === 'open').map(s => s.name);
+        console.log(`Heartbeat: open circuits: ${openCircuits.join(', ')}`);
+      }
     }
 
     // Step 0.7: Run goal hygiene - auto-archive orphan actions older than 7 days
