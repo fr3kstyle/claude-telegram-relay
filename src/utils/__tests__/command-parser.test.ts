@@ -12,11 +12,13 @@ import {
   parseProvider,
   parseDisplayName,
   parseEmailAddArgs,
+  parseEmailVerifyArgs,
   validateEmailFormat,
   detectProviderFromDomain,
   sanitizeDisplayName,
   isValidProviderType,
   EMAIL_ADD_USAGE,
+  EMAIL_VERIFY_USAGE,
 } from "../command-parser.ts";
 
 describe("tokenize", () => {
@@ -331,6 +333,130 @@ describe("parseEmailAddArgs", () => {
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.error).toContain("Unknown flag");
+      }
+    });
+  });
+});
+
+describe("parseEmailVerifyArgs", () => {
+  describe("success cases", () => {
+    test("parses email and simple code", () => {
+      const result = parseEmailVerifyArgs("user@gmail.com abc123");
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.email).toBe("user@gmail.com");
+        expect(result.data.code).toBe("abc123");
+      }
+    });
+
+    test("normalizes email to lowercase", () => {
+      const result = parseEmailVerifyArgs("User@Gmail.com abc123");
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.email).toBe("user@gmail.com");
+      }
+    });
+
+    test("handles codes with spaces", () => {
+      const result = parseEmailVerifyArgs("user@gmail.com 4/0AX4XfWh example code");
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.email).toBe("user@gmail.com");
+        expect(result.data.code).toBe("4/0AX4XfWh example code");
+      }
+    });
+
+    test("handles long OAuth codes", () => {
+      const longCode = "4/0AX4XfWh7lIqx-abc123def456ghi789jkl012mno345pqr678stu901vwx234yz";
+      const result = parseEmailVerifyArgs(`user@gmail.com ${longCode}`);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.code).toBe(longCode);
+      }
+    });
+
+    test("handles URL-encoded codes with special characters", () => {
+      const result = parseEmailVerifyArgs("user@gmail.com 4%2F0AX4XfWh%3D%3D");
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.code).toBe("4%2F0AX4XfWh%3D%3D");
+      }
+    });
+
+    test("handles codes with dots and hyphens", () => {
+      const result = parseEmailVerifyArgs("user@gmail.com M.C507_BAY.123-456");
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.code).toBe("M.C507_BAY.123-456");
+      }
+    });
+
+    test("handles outlook email", () => {
+      const result = parseEmailVerifyArgs("user@outlook.com outlook-code-123");
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.email).toBe("user@outlook.com");
+        expect(result.data.code).toBe("outlook-code-123");
+      }
+    });
+
+    test("handles extra leading/trailing whitespace", () => {
+      const result = parseEmailVerifyArgs("   user@gmail.com   abc123   ");
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.email).toBe("user@gmail.com");
+        expect(result.data.code).toBe("abc123");
+      }
+    });
+  });
+
+  describe("error cases", () => {
+    test("rejects empty input", () => {
+      const result = parseEmailVerifyArgs("");
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("No arguments");
+        expect(result.usage).toBe(EMAIL_VERIFY_USAGE);
+      }
+    });
+
+    test("rejects whitespace-only input", () => {
+      const result = parseEmailVerifyArgs("   ");
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("No arguments");
+      }
+    });
+
+    test("rejects missing email", () => {
+      const result = parseEmailVerifyArgs("not-an-email code123");
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("email");
+      }
+    });
+
+    test("rejects email without code", () => {
+      const result = parseEmailVerifyArgs("user@gmail.com");
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("Missing authorization code");
+      }
+    });
+
+    test("rejects email with only whitespace after it", () => {
+      const result = parseEmailVerifyArgs("user@gmail.com   ");
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("Missing authorization code");
+      }
+    });
+
+    test("rejects invalid email format", () => {
+      const result = parseEmailVerifyArgs("@gmail.com code123");
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("Invalid");
       }
     });
   });

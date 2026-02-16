@@ -467,3 +467,96 @@ export function parseEmailAddArgs(input: string): EmailAddParseResult {
     remaining,
   };
 }
+
+// ============================================================================
+// Email Verify Command Parser
+// ============================================================================
+
+/**
+ * Parsed arguments for /email verify command
+ */
+export interface EmailVerifyArgs {
+  /** Email address (normalized to lowercase) */
+  email: string;
+  /** OAuth authorization code (may contain spaces if URL-encoded) */
+  code: string;
+}
+
+/**
+ * Result of parsing /email verify arguments
+ */
+export type EmailVerifyParseResult = ParserResult<EmailVerifyArgs>;
+
+/**
+ * Usage string for /email verify command
+ */
+export const EMAIL_VERIFY_USAGE = `Usage: /email verify <email> <authorization_code>
+
+After authorizing with /email add, paste the code you received.
+The authorization code may be long and contain special characters.`;
+
+/**
+ * Parse /email verify command arguments
+ *
+ * Supports formats:
+ * - /email verify user@gmail.com 4/0AX4XfWh...
+ * - /email verify user@outlook.com "code with spaces"
+ *
+ * Edge cases handled:
+ * - Codes with spaces (URL-encoded)
+ * - Extra whitespace
+ * - Case-insensitive email
+ * - Invalid email format
+ * - Missing email or code
+ */
+export function parseEmailVerifyArgs(input: string): EmailVerifyParseResult {
+  const trimmed = input.trim();
+
+  if (!trimmed) {
+    return {
+      success: false,
+      error: 'No arguments provided',
+      usage: EMAIL_VERIFY_USAGE,
+    };
+  }
+
+  // Parse email (first positional)
+  const emailResult = parseEmail(trimmed);
+  if (!emailResult) {
+    return {
+      success: false,
+      error: 'Invalid or missing email address',
+      usage: EMAIL_VERIFY_USAGE,
+    };
+  }
+
+  const email = emailResult.email.toLowerCase();
+  const code = emailResult.remaining.trim();
+
+  // Validate email format
+  if (!validateEmailFormat(email)) {
+    return {
+      success: false,
+      error: `Invalid email format: ${emailResult.email}`,
+      usage: EMAIL_VERIFY_USAGE,
+    };
+  }
+
+  // Check for missing code
+  if (!code) {
+    return {
+      success: false,
+      error: 'Missing authorization code',
+      usage: EMAIL_VERIFY_USAGE,
+    };
+  }
+
+  return {
+    success: true,
+    data: {
+      email,
+      code,
+    },
+    remaining: '',
+  };
+}

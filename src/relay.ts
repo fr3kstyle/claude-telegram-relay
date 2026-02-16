@@ -36,7 +36,7 @@ import type { EmailProvider, EmailMessage, EmailProviderType } from "./email/typ
 import { getAuthUrl, exchangeCodeForToken } from "./google-oauth.ts";
 import { startTokenRefreshScheduler, stopTokenRefreshScheduler } from "./auth/index.ts";
 import { getTokenManager, type OAuthToken } from "./auth/token-manager.ts";
-import { parseEmailAddArgs, EMAIL_ADD_USAGE } from "./utils/command-parser.ts";
+import { parseEmailAddArgs, parseEmailVerifyArgs, EMAIL_ADD_USAGE } from "./utils/command-parser.ts";
 
 // ============================================================
 // THREAD CONTEXT TYPES
@@ -3102,18 +3102,17 @@ bot.command("email", async (ctx) => {
   // /email verify <email> <code>
   // Completes OAuth flow by exchanging authorization code for tokens
   if (args.startsWith("verify ")) {
-    const verifyArgs = args.substring(7).trim();
-    const parts = verifyArgs.split(/\s+/);
+    const verifyInput = args.substring(7).trim();
+    const parseResult = parseEmailVerifyArgs(verifyInput);
 
-    if (parts.length < 2) {
-      await ctx.reply("Usage: /email verify <email> <authorization_code>");
+    if (!parseResult.success) {
+      await ctx.reply(`❌ ${parseResult.error}\n\n${parseResult.usage}`);
       return;
     }
 
-    const email = parts[0].toLowerCase();
-    const code = parts.slice(1).join(' '); // Code may contain spaces if URL-encoded
+    const { email, code } = parseResult.data;
 
-    // Validate email
+    // Validate email with provider detection
     const validation = validateEmailWithProvider(email);
     if (!validation.valid) {
       await ctx.reply(`❌ ${validation.error}`);
