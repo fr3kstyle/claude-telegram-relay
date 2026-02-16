@@ -19,6 +19,15 @@ export {
   hasUrgentEmails,
 } from './email-context.ts';
 export type { EmailContextOptions, EmailContextResult, EmailSummary } from './email-context.ts';
+export {
+  validateEmail,
+  detectProviderFromEmail,
+  isValidProviderType,
+  getProviderDisplayName,
+  sanitizeDisplayName,
+  validateEmailWithProvider,
+} from './validation.ts';
+export type { EmailValidationResult } from './validation.ts';
 
 import { GmailProvider, createGmailProvider } from './gmail-provider.ts';
 import { getEmailProviderFactory } from './provider-factory.ts';

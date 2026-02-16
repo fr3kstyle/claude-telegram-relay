@@ -72,7 +72,7 @@ async function loadCredentials(): Promise<Credentials> {
 /**
  * Save token for a specific account
  */
-async function saveToken(email: string, tokenData: TokenData): Promise<void> {
+export async function saveToken(email: string, tokenData: TokenData): Promise<void> {
   await mkdir(TOKENS_DIR, { recursive: true });
 
   // Sanitize email for filename
