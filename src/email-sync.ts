@@ -1,8 +1,8 @@
 /**
  * Email Sync Module
  *
- * Synchronizes emails from Gmail to Supabase with embeddings for semantic search.
- * Uses existing Google OAuth tokens from ~/.claude-relay/google-tokens/
+ * Synchronizes emails from Gmail/Outlook to Supabase with embeddings for semantic search.
+ * Uses provider abstraction via GmailProvider/OutlookProvider with encrypted TokenManager.
  *
  * Usage:
  *   import { syncEmails, searchEmails, getRecentEmails } from './email-sync';
@@ -11,17 +11,22 @@
  */
 
 import { createClient } from "@supabase/supabase-js";
-import {
-  listEmails,
-  getEmail,
-  searchEmails as gmailSearch,
-  getAuthorizedAccounts,
-  type GmailMessage,
-} from "./google-apis.js";
+import { getEmailProviderFactory, type EmailProviderFactory } from "./email/provider-factory.ts";
+import type { EmailProvider, EmailMessage, EmailAccountConfig } from "./email/types.ts";
 import { existsSync } from "fs";
 import { join } from "path";
 
 const RELAY_DIR = join(process.env.HOME || "~", ".claude-relay");
+
+// Cache for provider instances
+let providerFactory: EmailProviderFactory | null = null;
+
+function getProviderFactory(): EmailProviderFactory {
+  if (!providerFactory) {
+    providerFactory = getEmailProviderFactory();
+  }
+  return providerFactory;
+}
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -50,7 +55,7 @@ export interface EmailSyncResult {
 
 export interface StoredEmail {
   id: string;
-  gmail_id: string;
+  gmail_id: string; // Kept for backward compatibility, now stores provider message ID
   thread_id: string | null;
   subject: string | null;
   from_email: string | null;
@@ -60,6 +65,23 @@ export interface StoredEmail {
   body_text: string | null;
   is_read: boolean;
   is_starred: boolean;
+}
+
+// Provider message to StoredEmail converter
+function emailMessageToStored(msg: EmailMessage): StoredEmail {
+  return {
+    id: msg.id,
+    gmail_id: msg.id, // Use provider message ID
+    thread_id: msg.threadId || null,
+    subject: msg.subject || null,
+    from_email: msg.from?.address || null,
+    from_name: msg.from?.name || null,
+    date: msg.date?.toISOString() || null,
+    snippet: msg.snippet?.substring(0, 500) || null,
+    body_text: msg.bodyText?.substring(0, 10000) || null,
+    is_read: msg.flags?.isRead ?? true,
+    is_starred: msg.flags?.isStarred ?? false,
+  };
 }
 
 // ============================================================
@@ -135,15 +157,16 @@ export async function getActiveAccounts(): Promise<EmailAccount[]> {
 
   if (error) {
     if (error.message.includes("does not exist")) {
-      // Return mock accounts from authorized Google accounts
-      const googleAccounts = await getAuthorizedAccounts();
-      return googleAccounts.map((email) => ({
-        id: "mock-" + email,
-        email,
-        display_name: email.split("@")[0],
-        provider: "gmail",
-        is_active: true,
-        sync_enabled: true,
+      // Return mock accounts from fallback accounts via provider factory
+      const factory = getProviderFactory();
+      const accounts = await factory.discoverAccounts();
+      return accounts.map((acc) => ({
+        id: acc.id,
+        email: acc.emailAddress,
+        display_name: acc.displayName || acc.emailAddress.split("@")[0],
+        provider: acc.providerType,
+        is_active: acc.isActive,
+        sync_enabled: acc.syncEnabled,
         last_sync_at: null,
       }));
     }
@@ -210,9 +233,25 @@ export async function syncEmails(
       }
     }
 
-    // Fetch emails from Gmail
+    // Get provider from factory
+    const factory = getProviderFactory();
+    const provider = await factory.getProvider(email);
+
+    if (!provider) {
+      result.errors.push(`No provider available for ${email}`);
+      return result;
+    }
+
+    // Verify authentication
+    if (!(await provider.isAuthenticated())) {
+      result.errors.push(`Account not authenticated: ${email}`);
+      return result;
+    }
+
+    // Fetch emails from provider
     console.log(`[Email] Fetching emails for ${email}...`);
-    const messages = await listEmails(email, { maxResults });
+    const messagesResult = await provider.listMessages({ maxResults });
+    const messages = messagesResult.messages;
     console.log(`[Email] Found ${messages.length} messages`);
 
     // Check if table exists
@@ -230,21 +269,19 @@ export async function syncEmails(
 
     // Store messages
     for (const msg of messages) {
-      const { email: fromEmail, name: fromName } = parseEmailAddress(msg.from);
-
       const emailData = {
         account_id: account.id,
-        gmail_id: msg.id,
+        gmail_id: msg.id, // Kept for backward compatibility
         thread_id: msg.threadId || null,
         subject: msg.subject || null,
-        from_email: fromEmail,
-        from_name: fromName,
-        to_recipients: msg.to ? [{ email: msg.to }] : [],
+        from_email: msg.from?.address || null,
+        from_name: msg.from?.name || null,
+        to_recipients: msg.to?.map(a => ({ email: a.address, name: a.name })) || [],
         date: msg.date ? new Date(msg.date).toISOString() : null,
         snippet: msg.snippet?.substring(0, 500) || null,
-        body_text: msg.body?.substring(0, 10000) || null,
-        is_read: !msg.unread,
-        is_starred: false,
+        body_text: msg.bodyText?.substring(0, 10000) || null,
+        is_read: msg.flags?.isRead ?? true,
+        is_starred: msg.flags?.isStarred ?? false,
       };
 
       const { error: upsertError } = await supabase
@@ -312,34 +349,23 @@ export async function searchEmails(
     .limit(1);
 
   if (tableCheck && (tableCheck.message?.includes("does not exist") || tableCheck.message?.includes("Could not find"))) {
-    // Fallback to Gmail API search
-    console.log("[Email] Table not found, using Gmail API search");
-    const accounts = await getAuthorizedAccounts();
+    // Fallback to provider API search
+    console.log("[Email] Table not found, using provider API search");
+    const factory = getProviderFactory();
+    const accounts = await factory.discoverAccounts();
     const allResults: StoredEmail[] = [];
 
-    for (const email of accounts) {
+    for (const account of accounts) {
       try {
-        const messages = await gmailSearch(email, query, limit);
-        for (const msg of messages) {
-          const { email: fromEmail, name: fromName } = parseEmailAddress(
-            msg.from
-          );
-          allResults.push({
-            id: "gmail-" + msg.id,
-            gmail_id: msg.id,
-            thread_id: msg.threadId || null,
-            subject: msg.subject || null,
-            from_email: fromEmail,
-            from_name: fromName,
-            date: msg.date || null,
-            snippet: msg.snippet || null,
-            body_text: msg.body || null,
-            is_read: !msg.unread,
-            is_starred: false,
-          });
+        const provider = factory.createProvider(account.providerType, account.emailAddress);
+        if (!(await provider.isAuthenticated())) continue;
+
+        const messages = await provider.searchMessages({ query, maxResults: limit });
+        for (const msg of messages.messages) {
+          allResults.push(emailMessageToStored(msg));
         }
       } catch (e: any) {
-        console.error(`[Email] Gmail search failed for ${email}:`, e.message);
+        console.error(`[Email] Provider search failed for ${account.emailAddress}:`, e.message);
       }
     }
 
@@ -376,37 +402,26 @@ export async function getRecentEmails(
     .limit(1);
 
   if (tableCheck && (tableCheck.message?.includes("does not exist") || tableCheck.message?.includes("Could not find"))) {
-    // Fallback to Gmail API
-    console.log("[Email] Table not found, using Gmail API");
-    const accounts = await getAuthorizedAccounts();
+    // Fallback to provider API
+    console.log("[Email] Table not found, using provider API");
+    const factory = getProviderFactory();
+    const accounts = await factory.discoverAccounts();
     const allResults: StoredEmail[] = [];
 
-    for (const email of accounts) {
+    for (const account of accounts) {
       try {
-        const messages = await listEmails(email, {
+        const provider = factory.createProvider(account.providerType, account.emailAddress);
+        if (!(await provider.isAuthenticated())) continue;
+
+        const messages = await provider.listMessages({
           maxResults: limit,
           labelIds: unreadOnly ? ["UNREAD"] : undefined,
         });
-        for (const msg of messages) {
-          const { email: fromEmail, name: fromName } = parseEmailAddress(
-            msg.from
-          );
-          allResults.push({
-            id: "gmail-" + msg.id,
-            gmail_id: msg.id,
-            thread_id: msg.threadId || null,
-            subject: msg.subject || null,
-            from_email: fromEmail,
-            from_name: fromName,
-            date: msg.date || null,
-            snippet: msg.snippet || null,
-            body_text: msg.body || null,
-            is_read: !msg.unread,
-            is_starred: false,
-          });
+        for (const msg of messages.messages) {
+          allResults.push(emailMessageToStored(msg));
         }
       } catch (e: any) {
-        console.error(`[Email] Gmail fetch failed for ${email}:`, e.message);
+        console.error(`[Email] Provider fetch failed for ${account.emailAddress}:`, e.message);
       }
     }
 
@@ -456,16 +471,20 @@ export async function getUnreadCount(): Promise<number> {
     .eq("is_read", false);
 
   if (error) {
-    // Fallback to Gmail API
-    const accounts = await getAuthorizedAccounts();
+    // Fallback to provider API
+    const factory = getProviderFactory();
+    const accounts = await factory.discoverAccounts();
     let total = 0;
-    for (const email of accounts) {
+    for (const account of accounts) {
       try {
-        const messages = await listEmails(email, {
+        const provider = factory.createProvider(account.providerType, account.emailAddress);
+        if (!(await provider.isAuthenticated())) continue;
+
+        const messages = await provider.listMessages({
           maxResults: 50,
           labelIds: ["UNREAD"],
         });
-        total += messages.length;
+        total += messages.messages.length;
       } catch (e) {
         // Ignore errors
       }
