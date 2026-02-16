@@ -186,6 +186,22 @@ function isRateLimited(userId: string): boolean {
   return false;
 }
 
+// Cleanup stale rate limit entries (users with no recent activity)
+function cleanupRateLimitMap(): number {
+  const now = Date.now();
+  let removed = 0;
+  for (const [userId, timestamps] of rateLimitMap.entries()) {
+    const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+    if (recent.length === 0) {
+      rateLimitMap.delete(userId);
+      removed++;
+    } else if (recent.length !== timestamps.length) {
+      rateLimitMap.set(userId, recent);
+    }
+  }
+  return removed;
+}
+
 // ============================================================
 // SKILL REGISTRY (auto-generated at startup)
 // ============================================================
@@ -1531,6 +1547,12 @@ async function heartbeatTick(): Promise<void> {
     // Step 0: Clean up orphaned files from crashes/errors
     await cleanupOrphanedFiles();
 
+    // Step 0.1: Cleanup stale rate limit entries (prevents memory leak)
+    const removedRateLimits = cleanupRateLimitMap();
+    if (removedRateLimits > 0) {
+      console.log(`Heartbeat: cleaned up ${removedRateLimits} stale rate limit entries`);
+    }
+
     // Step 0.5: Check disk usage (log weekly or when >80%)
     const diskUsage = await checkDiskUsage();
     const shouldLogDisk = diskUsage.usedPercent >= 80 || (new Date().getDay() === 0); // Sunday or high usage
@@ -2198,6 +2220,16 @@ async function transcribeAudio(audioPath: string): Promise<string> {
     if (!response.ok) {
       const errText = await response.text();
       console.error(`Groq Whisper error ${response.status}: ${errText}`);
+      // Log rate limit events for observability
+      if (response.status === 429) {
+        logEventV2("rate_limit", "Groq Whisper rate limited", {
+          service: "groq",
+          endpoint: "transcriptions",
+          model: GROQ_WHISPER_MODEL,
+          status: 429,
+          response: errText.substring(0, 500),
+        }).catch(() => {});
+      }
       throw new Error(`Transcription failed: ${response.status}`);
     }
 
@@ -2302,6 +2334,16 @@ async function textToSpeechElevenLabs(text: string): Promise<Buffer | null> {
     if (!response.ok) {
       const errText = await response.text();
       console.error(`ElevenLabs error ${response.status}: ${errText}`);
+      // Log rate limit events for observability
+      if (response.status === 429) {
+        logEventV2("rate_limit", "ElevenLabs TTS rate limited", {
+          service: "elevenlabs",
+          endpoint: "text-to-speech",
+          voice_id: ELEVENLABS_VOICE_ID,
+          status: 429,
+          response: errText.substring(0, 500),
+        }).catch(() => {});
+      }
       return null;
     }
 
