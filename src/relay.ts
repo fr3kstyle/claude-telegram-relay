@@ -17,11 +17,19 @@ import { join, basename } from "path";
 import { createClient } from "@supabase/supabase-js";
 import { Cron } from "croner";
 import { searchMemoryLocal, generateEmbedding } from "./embed-local.ts";
-import { listEmails, sendEmail, getAuthorizedAccounts, isAccountAuthorized } from "./google-apis.ts";
-import { fetchEmailContext, formatEmailContextForHeartbeat } from "./email/email-context.ts";
-import { createGmailProvider, GmailProvider } from "./email/gmail-provider.ts";
+// Email operations now use provider abstraction
+import {
+  fetchEmailContext,
+  formatEmailContextForHeartbeat,
+  getAuthorizedEmailAccounts,
+  listEmailsForRelay,
+  getEmailForRelay,
+  type RelayEmailMessage,
+} from "./email/index.ts";
 import { getEmailProviderFactory, getAuthorizedProviders } from "./email/provider-factory.ts";
 import type { EmailProvider, EmailMessage } from "./email/types.ts";
+// Legacy imports kept for sendEmail (not yet migrated)
+import { sendEmail, isAccountAuthorized } from "./google-apis.ts";
 
 // ============================================================
 // THREAD CONTEXT TYPES
@@ -2787,16 +2795,17 @@ bot.command("cron", async (ctx) => {
   );
 });
 
-// /email command: check emails via Gmail API
+// /email command: check emails via provider abstraction (Gmail, Outlook, etc.)
 bot.command("email", async (ctx) => {
   const args = (ctx.match || "").trim();
 
-  // Check if any Google accounts are authorized
-  const accounts = await getAuthorizedAccounts();
+  // Check if any email accounts are authorized (provider-agnostic)
+  const accounts = await getAuthorizedEmailAccounts();
   if (accounts.length === 0) {
     await ctx.reply(
-      "⚠️ No Google accounts authorized.\n\n" +
+      "⚠️ No email accounts authorized.\n\n" +
       "To set up email access:\n" +
+      "For Gmail:\n" +
       "1. Create OAuth credentials in Google Cloud Console\n" +
       "2. Save credentials to ~/.claude-relay/google-credentials.json\n" +
       "3. Run: bun run src/google-oauth.ts\n" +
@@ -2812,7 +2821,7 @@ bot.command("email", async (ctx) => {
   if (!args || args === "inbox") {
     try {
       await ctx.reply("📧 Fetching emails...");
-      const emails = await listEmails(email, { maxResults: 10, labelIds: ["INBOX"] });
+      const emails = await listEmailsForRelay(email, { maxResults: 10, labelIds: ["INBOX"] });
 
       if (emails.length === 0) {
         await ctx.reply("No emails found in inbox.");
@@ -2852,8 +2861,7 @@ bot.command("email", async (ctx) => {
     }
 
     try {
-      const { getEmail } = await import("./google-apis.ts");
-      const msg = await getEmail(email, id);
+      const msg = await getEmailForRelay(email, id);
       if (!msg) {
         await ctx.reply("Email not found.");
         return;
@@ -2885,7 +2893,7 @@ bot.command("email", async (ctx) => {
 
     try {
       await ctx.reply(`🔍 Searching for: ${query}`);
-      const emails = await listEmails(email, { query, maxResults: 10 });
+      const emails = await listEmailsForRelay(email, { query, maxResults: 10 });
 
       if (emails.length === 0) {
         await ctx.reply("No emails found matching your search.");

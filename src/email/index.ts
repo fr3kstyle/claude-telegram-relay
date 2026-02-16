@@ -66,3 +66,133 @@ export async function getAuthorizedGmailProviders(): Promise<GmailProvider[]> {
 export async function getDiscoveredAccounts(): Promise<string[]> {
   return discoverAuthorizedAccounts();
 }
+
+// ============================================================
+// RELAY ADAPTER FUNCTIONS
+// ============================================================
+// These functions provide a backward-compatible interface for relay.ts
+// to use the new provider abstraction without major code changes.
+
+import type { EmailMessage, ListMessagesOptions } from './types.ts';
+
+/**
+ * Relay message format - compatible with google-apis.ts GmailMessage
+ */
+export interface RelayEmailMessage {
+  id: string;
+  threadId?: string;
+  subject?: string;
+  from?: string;
+  to?: string;
+  date?: string;
+  snippet?: string;
+  body?: string;
+  unread?: boolean;
+  starred?: boolean;
+  labels?: string[];
+}
+
+/**
+ * Get authorized email accounts (provider-agnostic)
+ *
+ * Discovers accounts from both database and token files.
+ * Returns email addresses of all authorized accounts.
+ */
+export async function getAuthorizedEmailAccounts(): Promise<string[]> {
+  const factory = getEmailProviderFactory();
+
+  // First try database discovery
+  const accounts = await factory.discoverAccounts();
+
+  // Filter to only active accounts
+  const activeAccounts = accounts.filter(a => a.isActive);
+
+  // Fall back to token file discovery if no database accounts
+  if (activeAccounts.length === 0) {
+    return discoverAuthorizedAccounts();
+  }
+
+  return activeAccounts.map(a => a.emailAddress);
+}
+
+/**
+ * List emails using provider abstraction
+ *
+ * Adapter function that works with any email provider.
+ */
+export async function listEmailsForRelay(
+  email: string,
+  options: { maxResults?: number; labelIds?: string[]; query?: string } = {}
+): Promise<RelayEmailMessage[]> {
+  const factory = getEmailProviderFactory();
+  const provider = await factory.getProvider(email);
+
+  if (!provider) {
+    throw new Error(`No provider available for ${email}`);
+  }
+
+  // Build provider options
+  const providerOptions: ListMessagesOptions = {
+    maxResults: options.maxResults || 10,
+    labelIds: options.labelIds,
+    query: options.query,
+  };
+
+  // Use search if query provided, otherwise list
+  const result = options.query
+    ? await provider.searchMessages({ query: options.query, maxResults: options.maxResults || 10 })
+    : await provider.listMessages(providerOptions);
+
+  // Convert to relay format
+  return result.messages.map(emailMessageToRelayFormat);
+}
+
+/**
+ * Get a single email using provider abstraction
+ */
+export async function getEmailForRelay(
+  email: string,
+  messageId: string
+): Promise<RelayEmailMessage | null> {
+  const factory = getEmailProviderFactory();
+  const provider = await factory.getProvider(email);
+
+  if (!provider) {
+    throw new Error(`No provider available for ${email}`);
+  }
+
+  try {
+    const msg = await provider.getMessage(messageId);
+    return emailMessageToRelayFormat(msg);
+  } catch (error) {
+    console.error(`[Email] Failed to get message ${messageId}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Convert EmailMessage to RelayEmailMessage format
+ */
+function emailMessageToRelayFormat(msg: EmailMessage): RelayEmailMessage {
+  // Format from address as "Name <email@domain.com>"
+  const fromFormatted = msg.from?.name
+    ? `${msg.from.name} <${msg.from.address}>`
+    : msg.from?.address || 'Unknown';
+
+  // Format to addresses
+  const toFormatted = msg.to?.map(t => t.name ? `${t.name} <${t.address}>` : t.address).join(', ');
+
+  return {
+    id: msg.id,
+    threadId: msg.threadId,
+    subject: msg.subject || undefined,
+    from: fromFormatted,
+    to: toFormatted,
+    date: msg.date?.toISOString(),
+    snippet: msg.snippet?.substring(0, 500),
+    body: msg.bodyText,
+    unread: msg.flags?.isRead === false,
+    starred: msg.flags?.isStarred || false,
+    labels: msg.labels,
+  };
+}
