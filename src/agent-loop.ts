@@ -26,6 +26,24 @@ import { execSync } from "child_process";
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
 // ============================================================
+// CHILD PROCESS TRACKING (for graceful shutdown)
+// ============================================================
+const activeProcesses = new Set<Bun.Subprocess>();
+
+function killActiveChildren() {
+  if (activeProcesses.size === 0) return;
+  console.log(`[AGENT] Killing ${activeProcesses.size} active child process(es)...`);
+  for (const proc of activeProcesses) {
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      // Process may already be dead
+    }
+  }
+  activeProcesses.clear();
+}
+
+// ============================================================
 // CONFIGURATION
 // ============================================================
 
@@ -176,9 +194,15 @@ async function callClaudeWithRetry(
         timeout: TIMEOUT_MS,
       });
 
+      // Track child process for graceful shutdown
+      activeProcesses.add(proc);
+
       const output = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();
       const exitCode = await proc.exited;
+
+      // Remove from tracking after completion
+      activeProcesses.delete(proc);
 
       if (exitCode === 0) {
         console.log(`[AGENT] Claude responded successfully (${output.length} chars)`);
@@ -642,11 +666,13 @@ async function main() {
 // Handle shutdown
 process.on("SIGINT", () => {
   console.log("\n[AGENT] Shutting down...");
+  killActiveChildren();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
   console.log("\n[AGENT] Shutting down...");
+  killActiveChildren();
   process.exit(0);
 });
 
