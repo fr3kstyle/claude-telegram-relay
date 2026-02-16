@@ -1379,6 +1379,41 @@ async function checkDiskUsage(): Promise<{
 }
 
 /**
+ * Get system process count for health monitoring.
+ * Counts total processes, running state, and claude/bun specific processes.
+ */
+async function getProcessCount(): Promise<{
+  total: number;
+  running: number;
+  claudeProcesses: number;
+  bunProcesses: number;
+}> {
+  try {
+    // Use ps to get process stats
+    const psProc = spawn(["ps", "aux", "--no-headers"]);
+    const psText = await new Response(psProc.stdout).text();
+    await psProc.exited;
+
+    const lines = psText.trim().split("\n").filter(l => l.length > 0);
+    const total = lines.length;
+
+    // Count running processes (state R)
+    const running = lines.filter(l => /\s+R\s+/.test(l)).length;
+
+    // Count claude processes
+    const claudeProcesses = lines.filter(l => /claude/.test(l)).length;
+
+    // Count bun processes
+    const bunProcesses = lines.filter(l => /\bbun\b/.test(l)).length;
+
+    return { total, running, claudeProcesses, bunProcesses };
+  } catch (error) {
+    console.error("Process count check failed:", error);
+    return { total: 0, running: 0, claudeProcesses: 0, bunProcesses: 0 };
+  }
+}
+
+/**
  * Run goal hygiene during heartbeat - auto-archive orphan actions older than threshold.
  * This keeps the memory table clean and prevents stale actions from accumulating.
  * Falls back to direct TypeScript implementation when RPC is not available.
@@ -1603,6 +1638,21 @@ async function heartbeatTick(): Promise<void> {
       if (hasOpenCircuits) {
         const openCircuits = breakerStats.filter(s => s.state === 'open').map(s => s.name);
         console.log(`Heartbeat: open circuits: ${openCircuits.join(', ')}`);
+      }
+    }
+
+    // Step 0.68: Log process count for system health monitoring
+    const processCount = await getProcessCount();
+    const shouldLogProcesses = processCount.total > 150 || new Date().getDay() === 0;
+    if (shouldLogProcesses) {
+      await logEventV2("process_count", "System process count", {
+        total: processCount.total,
+        running: processCount.running,
+        claude_processes: processCount.claudeProcesses,
+        bun_processes: processCount.bunProcesses,
+      });
+      if (processCount.total > 150) {
+        console.log(`Heartbeat: high process count: ${processCount.total} total`);
       }
     }
 
