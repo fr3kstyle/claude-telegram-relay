@@ -9,7 +9,7 @@
 
 import { describe, test, expect, beforeEach, mock, afterEach } from "bun:test";
 import { parseEmailVerifyArgs } from "../../utils/command-parser.ts";
-import { validateEmailWithProvider } from "../validation.ts";
+import { validateEmailWithProvider, parseOAuthError } from "../validation.ts";
 
 // ============================================================
 // PARSING LAYER TESTS
@@ -373,13 +373,20 @@ describe("verify flow: user feedback", () => {
     expect(expectedMessage).toContain(providerDisplayName);
   });
 
-  test("error message suggests retry with fresh auth URL", () => {
-    const email = "user@gmail.com";
+  test("error message uses parseOAuthError for user-friendly output", () => {
     const errorMsg = "Token exchange failed: invalid_grant";
 
-    const expectedMessage = `❌ Failed to verify authorization.\n\nError: ${errorMsg}\n\nTry /email add ${email} again to get a fresh authorization URL.`;
-    expect(expectedMessage).toContain("Try /email add");
-    expect(expectedMessage).toContain(email);
+    // Verify that parseOAuthError categorizes this correctly
+    const parsed = parseOAuthError(errorMsg);
+    expect(parsed.category).toBe("invalid_code");
+    expect(parsed.userMessage).toContain("invalid");
+    expect(parsed.suggestion).toContain("entire code");
+
+    // The relay formats this as HTML:
+    // `❌ <b>Authorization Failed</b>\n\n${parsed.userMessage}\n\n<b>Suggestion:</b> ${parsed.suggestion}`
+    const expectedMessage = `❌ <b>Authorization Failed</b>\n\n${parsed.userMessage}\n\n<b>Suggestion:</b> ${parsed.suggestion}`;
+    expect(expectedMessage).toContain("<b>Authorization Failed</b>");
+    expect(expectedMessage).toContain(parsed.suggestion);
   });
 
   test("usage message shows correct format", () => {
