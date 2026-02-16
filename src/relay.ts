@@ -39,6 +39,7 @@ import { getAuthUrl as getMicrosoftAuthUrl, exchangeCodeForToken as exchangeMicr
 import { startTokenRefreshScheduler, stopTokenRefreshScheduler } from "./auth/index.ts";
 import { getTokenManager, type OAuthToken } from "./auth/token-manager.ts";
 import { parseEmailAddArgs, parseEmailVerifyArgs, EMAIL_ADD_USAGE } from "./utils/command-parser.ts";
+import { circuitBreakers, CircuitOpenError } from "./utils/circuit-breaker.ts";
 
 // ============================================================
 // THREAD CONTEXT TYPES
