@@ -28,8 +28,7 @@ import {
 } from "./email/index.ts";
 import { getEmailProviderFactory, getAuthorizedProviders } from "./email/provider-factory.ts";
 import type { EmailProvider, EmailMessage } from "./email/types.ts";
-// Legacy imports kept for sendEmail (not yet migrated)
-import { sendEmail, isAccountAuthorized } from "./google-apis.ts";
+import { sendEmailForRelay } from "./email/index.ts";
 
 // ============================================================
 // THREAD CONTEXT TYPES
