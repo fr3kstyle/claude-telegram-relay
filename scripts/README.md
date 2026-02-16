@@ -12,6 +12,7 @@ Operational scripts for maintenance and utilities.
 | `backfill-embeddings.ts` | Generate embeddings for memory entries without them |
 | `apply-migrations.ts` | Apply pending Supabase migrations |
 | `analyze-memory-table.ts` | Analyze memory table statistics |
+| `analyze-orphans.ts` | Analyze and archive orphan actions (no parent goal) |
 
 ## Archive Directory
 

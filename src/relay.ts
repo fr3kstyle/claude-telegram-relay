@@ -1285,6 +1285,51 @@ async function cleanupOrphanedFiles(): Promise<{ uploads: number; temp: number }
   return { uploads: uploadsCleaned, temp: tempCleaned };
 }
 
+/**
+ * Check disk usage and log to observability
+ *
+ * Returns disk usage info for the root partition and the relay directory.
+ * Called at each heartbeat for monitoring disk space trends.
+ */
+async function checkDiskUsage(): Promise<{
+  totalGB: number;
+  usedGB: number;
+  availableGB: number;
+  usedPercent: number;
+  relayDirMB: number;
+}> {
+  try {
+    // Get root partition usage
+    const dfProc = spawn(["df", "-BG", "/"]);
+    const dfText = await new Response(dfProc.stdout).text();
+    await dfProc.exited;
+
+    // Parse df output: Filesystem, Size, Used, Available, Use%, Mounted on
+    const lines = dfText.trim().split("\n");
+    const dataLine = lines[1]?.split(/\s+/);
+    const totalGB = parseInt(dataLine?.[1] || "0");
+    const usedGB = parseInt(dataLine?.[2] || "0");
+    const availableGB = parseInt(dataLine?.[3] || "0");
+    const usedPercent = parseInt(dataLine?.[4]?.replace("%", "") || "0");
+
+    // Get relay directory size
+    let relayDirMB = 0;
+    try {
+      const duProc = spawn(["du", "-sm", RELAY_DIR]);
+      const duText = await new Response(duProc.stdout).text();
+      await duProc.exited;
+      relayDirMB = parseInt(duText.split("\t")[0] || "0");
+    } catch {
+      // du might fail if directory doesn't exist
+    }
+
+    return { totalGB, usedGB, availableGB, usedPercent, relayDirMB };
+  } catch (error) {
+    console.error("Disk usage check failed:", error);
+    return { totalGB: 0, usedGB: 0, availableGB: 0, usedPercent: 0, relayDirMB: 0 };
+  }
+}
+
 async function heartbeatTick(): Promise<void> {
   if (heartbeatRunning) {
     console.log("Heartbeat: skipping (previous tick still running)");
@@ -1317,6 +1362,22 @@ async function heartbeatTick(): Promise<void> {
 
     // Step 0: Clean up orphaned files from crashes/errors
     await cleanupOrphanedFiles();
+
+    // Step 0.5: Check disk usage (log weekly or when >80%)
+    const diskUsage = await checkDiskUsage();
+    const shouldLogDisk = diskUsage.usedPercent >= 80 || (new Date().getDay() === 0); // Sunday or high usage
+    if (shouldLogDisk) {
+      await logEventV2("disk_usage", "Disk usage check", {
+        total_gb: diskUsage.totalGB,
+        used_gb: diskUsage.usedGB,
+        available_gb: diskUsage.availableGB,
+        used_percent: diskUsage.usedPercent,
+        relay_dir_mb: diskUsage.relayDirMB,
+      });
+      if (diskUsage.usedPercent >= 80) {
+        console.log(`Heartbeat: disk usage at ${diskUsage.usedPercent}% (${diskUsage.usedGB}G/${diskUsage.totalGB}G)`);
+      }
+    }
 
     // Step 1: Read HEARTBEAT.md checklist
     const checklist = await readHeartbeatChecklist();
