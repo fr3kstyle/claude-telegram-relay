@@ -62,6 +62,7 @@ function resolveClaudePath(): string {
 
 const CLAUDE_PATH = resolveClaudePath();
 const LOOP_INTERVAL_MS = parseInt(process.env.AGENT_LOOP_INTERVAL || "180000"); // 3 minutes default
+const ALERT_INTERVAL_MS = parseInt(process.env.AGENT_ALERT_INTERVAL || "1800000"); // 30 minutes default
 const STATE_FILE = join(process.env.HOME || "~", ".claude-relay", "agent-state.json");
 const RELAY_DIR = join(process.env.HOME || "~", ".claude-relay");
 
@@ -74,6 +75,7 @@ const supabase: SupabaseClient | null =
 // Telegram notification (optional)
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
+let lastAlertTime = 0; // Rate limit alerts
 
 // ============================================================
 // STATE MANAGEMENT
@@ -511,15 +513,19 @@ async function runAgentCycle(): Promise<void> {
       await processMemoryIntents(supabase, result.output);
     }
 
-    // Check for important notifications
+    // Check for important notifications (rate limited to every 30 min)
     const lowerOutput = result.output.toLowerCase();
+    const now = Date.now();
+    const timeSinceLastAlert = now - lastAlertTime;
+
     if (
-      lowerOutput.includes("urgent") ||
-      lowerOutput.includes("critical") ||
-      lowerOutput.includes("error") ||
-      lowerOutput.includes("blocked") ||
-      lowerOutput.includes("cycle") ||
-      lowerOutput.includes("summary")
+      timeSinceLastAlert >= ALERT_INTERVAL_MS &&
+      (lowerOutput.includes("urgent") ||
+        lowerOutput.includes("critical") ||
+        lowerOutput.includes("error") ||
+        lowerOutput.includes("blocked") ||
+        lowerOutput.includes("cycle") ||
+        lowerOutput.includes("summary"))
     ) {
       // Send notification about important events (Telegram limit is 4096 chars)
       const maxLen = 4000;
@@ -527,6 +533,10 @@ async function runAgentCycle(): Promise<void> {
         ? `[Agent Alert]\n\n${result.output.substring(0, maxLen)}\n\n... (truncated)`
         : `[Agent Alert]\n\n${result.output}`;
       await sendTelegramNotification(notification);
+      lastAlertTime = now;
+      console.log(`[AGENT] Alert sent, next alert in ${ALERT_INTERVAL_MS / 60000} minutes`);
+    } else if (timeSinceLastAlert < ALERT_INTERVAL_MS) {
+      console.log(`[AGENT] Alert skipped (rate limited, ${Math.round((ALERT_INTERVAL_MS - timeSinceLastAlert) / 60000)} min remaining)`);
     }
 
     // Log summary
@@ -564,6 +574,7 @@ async function runAgentCycle(): Promise<void> {
 async function main() {
   console.log("[AGENT] Autonomous Agent Loop Starting...");
   console.log(`[AGENT] Loop interval: ${LOOP_INTERVAL_MS}ms`);
+  console.log(`[AGENT] Alert interval: ${ALERT_INTERVAL_MS}ms (${ALERT_INTERVAL_MS / 60000} min)`);
   console.log(`[AGENT] Claude path: ${CLAUDE_PATH}`);
 
   // Ensure state directory exists
