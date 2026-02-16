@@ -94,6 +94,55 @@ function killOrphanedClaudeProcesses() {
   }
 }
 
+/**
+ * Kill zombie bun processes (relay.ts, agent-loop.ts) from previous PM2 instances.
+ * PM2 restarts can leave old bun processes running as orphans.
+ */
+function killZombieBunProcesses() {
+  try {
+    const result = Bun.spawnSync(["bash", "-c",
+      `ps -eo pid,ppid,command | grep -E 'bun.*run.*(relay|agent-loop)' | grep -v grep`
+    ]);
+    const output = new TextDecoder().decode(result.stdout).trim();
+    if (!output) return 0;
+
+    const currentPid = process.pid;
+    let killed = 0;
+
+    for (const line of output.split("\n")) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      if (match) {
+        const pid = parseInt(match[1]);
+        const ppid = parseInt(match[2]);
+        const cmd = match[3];
+
+        // Skip our own process
+        if (pid === currentPid) continue;
+
+        // Kill if orphaned (ppid=1 means parent died, likely PM2 restart)
+        // Also kill if ppid matches a dead process or is not PM2's god process
+        if (ppid === 1) {
+          try {
+            process.kill(pid, "SIGTERM");
+            console.log(`[AGENT] Killed zombie bun process ${pid}: ${cmd.substring(0, 60)}`);
+            killed++;
+          } catch {
+            // Process already exited
+          }
+        }
+      }
+    }
+
+    if (killed > 0) {
+      console.log(`[AGENT] Cleaned up ${killed} zombie bun process(es) on startup`);
+    }
+    return killed;
+  } catch {
+    // Best-effort cleanup
+    return 0;
+  }
+}
+
 // ============================================================
 // CIRCUIT BREAKER for Claude API calls
 // ============================================================
@@ -727,7 +776,8 @@ async function main() {
   console.log(`[AGENT] Alert interval: ${ALERT_INTERVAL_MS}ms (${ALERT_INTERVAL_MS / 60000} min)`);
   console.log(`[AGENT] Claude path: ${CLAUDE_PATH}`);
 
-  // Clean up orphaned claude processes from previous instances
+  // Clean up orphaned processes from previous instances
+  killZombieBunProcesses();
   killOrphanedClaudeProcesses();
 
   // Ensure state directory exists
