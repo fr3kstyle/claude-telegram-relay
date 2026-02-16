@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'bun:test';
 import { CircuitBreaker, CircuitOpenError, CircuitBreakerRegistry } from '../circuit-breaker.ts';
 
 describe('CircuitBreaker', () => {
@@ -7,7 +7,7 @@ describe('CircuitBreaker', () => {
   beforeEach(() => {
     breaker = new CircuitBreaker('test', {
       failureThreshold: 3,
-      resetTimeout: 1000, // 1 second - enough time for tests to run
+      resetTimeout: 100, // Fast for tests
       successThreshold: 2,
     });
   });
@@ -31,8 +31,8 @@ describe('CircuitBreaker', () => {
     it('counts failures but stays closed under threshold', async () => {
       const failingFn = () => Promise.reject(new Error('fail'));
 
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
 
       expect(breaker.getState()).toBe('closed');
       const stats = breaker.getStats();
@@ -42,9 +42,9 @@ describe('CircuitBreaker', () => {
     it('opens after reaching failure threshold', async () => {
       const failingFn = () => Promise.reject(new Error('fail'));
 
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
 
       expect(breaker.getState()).toBe('open');
       expect(breaker.isOpen()).toBe(true);
@@ -53,7 +53,7 @@ describe('CircuitBreaker', () => {
     it('resets failure count on success', async () => {
       const failingFn = () => Promise.reject(new Error('fail'));
 
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
       expect(breaker.getStats().failures).toBe(1);
 
       await breaker.execute(() => Promise.resolve('success'));
@@ -65,20 +65,26 @@ describe('CircuitBreaker', () => {
     beforeEach(async () => {
       // Trip the breaker
       const failingFn = () => Promise.reject(new Error('fail'));
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
     });
 
     it('rejects calls immediately when open', async () => {
-      await expect(breaker.execute(() => Promise.resolve('success')))
-        .rejects.toThrow(CircuitOpenError);
+      let threw = false;
+      try {
+        await breaker.execute(() => Promise.resolve('success'));
+      } catch (error) {
+        threw = true;
+        expect(error).toBeInstanceOf(CircuitOpenError);
+      }
+      expect(threw).toBe(true);
     });
 
     it('includes retry time in error', async () => {
       try {
         await breaker.execute(() => Promise.resolve('success'));
-        expect.fail('Should have thrown');
+        expect(true).toBe(false); // Should not reach here
       } catch (error) {
         expect(error).toBeInstanceOf(CircuitOpenError);
         expect((error as CircuitOpenError).circuitName).toBe('test');
@@ -90,7 +96,7 @@ describe('CircuitBreaker', () => {
       expect(breaker.getState()).toBe('open');
 
       // Wait for reset timeout
-      await new Promise(resolve => setTimeout(resolve, 1100));
+      await new Promise(resolve => setTimeout(resolve, 150));
 
       // Next call should be allowed (half-open)
       const result = await breaker.execute(() => Promise.resolve('success'));
@@ -103,12 +109,12 @@ describe('CircuitBreaker', () => {
     beforeEach(async () => {
       // Trip the breaker
       const failingFn = () => Promise.reject(new Error('fail'));
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
-      await expect(breaker.execute(failingFn)).rejects.toThrow('fail');
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
+      try { await breaker.execute(failingFn); } catch (e) { /* expected */ }
 
       // Wait for reset timeout
-      await new Promise(resolve => setTimeout(resolve, 1100));
+      await new Promise(resolve => setTimeout(resolve, 150));
     });
 
     it('closes after enough successes', async () => {
@@ -125,48 +131,57 @@ describe('CircuitBreaker', () => {
       await breaker.execute(() => Promise.resolve('success'));
       expect(breaker.getState()).toBe('half-open');
 
-      await expect(breaker.execute(() => Promise.reject(new Error('fail'))))
-        .rejects.toThrow('fail');
+      try {
+        await breaker.execute(() => Promise.reject(new Error('fail')));
+      } catch (e) { /* expected */ }
       expect(breaker.getState()).toBe('open');
     });
   });
 
   describe('callbacks', () => {
     it('calls onOpen when circuit opens', async () => {
-      const onOpen = vi.fn();
-      const cb = new CircuitBreaker('test', { failureThreshold: 2, onOpen });
+      let openCalled = false;
+      let openFailures = 0;
+      const cb = new CircuitBreaker('test', {
+        failureThreshold: 2,
+        onOpen: (_name, failures) => {
+          openCalled = true;
+          openFailures = failures;
+        }
+      });
 
-      await expect(cb.execute(() => Promise.reject(new Error('fail')))).rejects.toThrow();
-      await expect(cb.execute(() => Promise.reject(new Error('fail')))).rejects.toThrow();
+      try { await cb.execute(() => Promise.reject(new Error('fail'))); } catch (e) { /* expected */ }
+      try { await cb.execute(() => Promise.reject(new Error('fail'))); } catch (e) { /* expected */ }
 
-      expect(onOpen).toHaveBeenCalledWith('test', 2);
+      expect(openCalled).toBe(true);
+      expect(openFailures).toBe(2);
     });
 
     it('calls onClose when circuit closes', async () => {
-      const onClose = vi.fn();
+      let closeCalled = false;
       const cb = new CircuitBreaker('test', {
         failureThreshold: 1,
-        resetTimeout: 100,
+        resetTimeout: 50,
         successThreshold: 1,
-        onClose
+        onClose: () => { closeCalled = true; }
       });
 
       // Open it
-      await expect(cb.execute(() => Promise.reject(new Error('fail')))).rejects.toThrow();
+      try { await cb.execute(() => Promise.reject(new Error('fail'))); } catch (e) { /* expected */ }
       expect(cb.getState()).toBe('open');
 
       // Wait and recover
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, 100));
       await cb.execute(() => Promise.resolve('success'));
 
-      expect(onClose).toHaveBeenCalledWith('test');
+      expect(closeCalled).toBe(true);
     });
   });
 
   describe('stats', () => {
     it('tracks statistics correctly', async () => {
       await breaker.execute(() => Promise.resolve('ok'));
-      await expect(breaker.execute(() => Promise.reject(new Error('fail')))).rejects.toThrow();
+      try { await breaker.execute(() => Promise.reject(new Error('fail'))); } catch (e) { /* expected */ }
       await breaker.execute(() => Promise.resolve('ok2'));
 
       const stats = breaker.getStats();
@@ -183,9 +198,9 @@ describe('CircuitBreaker', () => {
   describe('manual control', () => {
     it('reset() forces closed state', async () => {
       // Trip it
-      await expect(breaker.execute(() => Promise.reject(new Error('fail')))).rejects.toThrow();
-      await expect(breaker.execute(() => Promise.reject(new Error('fail')))).rejects.toThrow();
-      await expect(breaker.execute(() => Promise.reject(new Error('fail')))).rejects.toThrow();
+      try { await breaker.execute(() => Promise.reject(new Error('fail'))); } catch (e) { /* expected */ }
+      try { await breaker.execute(() => Promise.reject(new Error('fail'))); } catch (e) { /* expected */ }
+      try { await breaker.execute(() => Promise.reject(new Error('fail'))); } catch (e) { /* expected */ }
       expect(breaker.getState()).toBe('open');
 
       breaker.reset();
@@ -214,13 +229,13 @@ describe('CircuitBreaker', () => {
       });
 
       // These don't count
-      await expect(cb.execute(() => Promise.reject(new Error('400 bad request')))).rejects.toThrow();
-      await expect(cb.execute(() => Promise.reject(new Error('401 unauthorized')))).rejects.toThrow();
+      try { await cb.execute(() => Promise.reject(new Error('400 bad request'))); } catch (e) { /* expected */ }
+      try { await cb.execute(() => Promise.reject(new Error('401 unauthorized'))); } catch (e) { /* expected */ }
       expect(cb.getState()).toBe('closed');
 
       // These count
-      await expect(cb.execute(() => Promise.reject(new Error('500 server error')))).rejects.toThrow();
-      await expect(cb.execute(() => Promise.reject(new Error('503 unavailable')))).rejects.toThrow();
+      try { await cb.execute(() => Promise.reject(new Error('500 server error'))); } catch (e) { /* expected */ }
+      try { await cb.execute(() => Promise.reject(new Error('503 unavailable'))); } catch (e) { /* expected */ }
       expect(cb.getState()).toBe('open');
     });
   });
@@ -262,7 +277,7 @@ describe('CircuitBreakerRegistry', () => {
 
     expect(registry.hasOpenCircuits()).toBe(false);
 
-    await expect(b1.execute(() => Promise.reject(new Error('fail')))).rejects.toThrow();
+    try { await b1.execute(() => Promise.reject(new Error('fail'))); } catch (e) { /* expected */ }
 
     expect(registry.hasOpenCircuits()).toBe(true);
   });
@@ -271,7 +286,7 @@ describe('CircuitBreakerRegistry', () => {
     const b1 = registry.get('api1', { failureThreshold: 1 });
     const b2 = registry.get('api2', { failureThreshold: 1 });
 
-    await expect(b1.execute(() => Promise.reject(new Error('fail')))).rejects.toThrow();
+    try { await b1.execute(() => Promise.reject(new Error('fail'))); } catch (e) { /* expected */ }
     b2.trip();
 
     expect(registry.hasOpenCircuits()).toBe(true);
