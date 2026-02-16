@@ -379,9 +379,9 @@ async function getMemoryContext(): Promise<string[]> {
       return rpcFacts.map((m: { content: string }) => m.content);
     }
 
-    // Fallback: query memory table directly
+    // Fallback: query global_memory table directly
     const { data: memoryFacts } = await supabase
-      .from("memory")
+      .from("global_memory")
       .select("content")
       .eq("type", "fact")
       .eq("status", "active")
@@ -411,10 +411,11 @@ async function insertMemory(
     const row: Record<string, unknown> = {
       content,
       type,
+      status: 'active',
     };
-    // Store thread_id in metadata (memory table doesn't have source_thread_id column)
+    // global_memory has source_thread_id column directly
     if (sourceThreadId) {
-      row.metadata = { source_thread_id: sourceThreadId };
+      row.source_thread_id = sourceThreadId;
     }
     if (deadline) {
       const parsed = new Date(deadline);
@@ -427,14 +428,8 @@ async function insertMemory(
     if (priority !== undefined) {
       row.priority = priority;
     }
-    // Use memory table (has full schema with parent_id, status, weight)
-    // rather than global_memory (basic schema only)
-    const rowWithDefaults = {
-      ...row,
-      status: 'active',
-      weight: 1.0
-    };
-    const { error } = await supabase.from("memory").insert(rowWithDefaults);
+    // Use global_memory directly (has full schema including source_thread_id)
+    const { error } = await supabase.from("global_memory").insert(row);
     if (error) {
       console.error("insertMemory error:", error);
       return false;
@@ -456,11 +451,11 @@ async function deleteMemory(searchText: string): Promise<boolean> {
     return false;
   }
   try {
-    // Try memory table first (primary table with full schema)
+    // Use global_memory directly (has full schema)
     const { data: memoryItems, error: memErr } = await supabase
-      .from("memory")
+      .from("global_memory")
       .select("id, content, type")
-      .in("type", ["fact", "goal", "preference", "strategy", "action", "reflection"])
+      .in("type", ["fact", "goal", "preference", "strategy", "action", "reflection", "reminder", "note"])
       .eq("status", "active")
       .limit(500);
 
@@ -469,31 +464,13 @@ async function deleteMemory(searchText: string): Promise<boolean> {
         m.content.toLowerCase().includes(searchText.toLowerCase())
       );
       if (match) {
-        await supabase.from("memory").delete().eq("id", match.id);
-        console.log(`Forgot memory (memory) [${(match as any).type}]: ${match.content}`);
-        return true;
-      }
-    }
-
-    // Fallback: try global_memory
-    const { data: globalItems, error: globalErr } = await supabase
-      .from("global_memory")
-      .select("id, content, type")
-      .in("type", ["fact", "goal", "preference", "strategy", "action", "reflection", "reminder", "note"])
-      .limit(200);
-
-    if (!globalErr && globalItems) {
-      const match = globalItems.find((m: { id: string; content: string }) =>
-        m.content.toLowerCase().includes(searchText.toLowerCase())
-      );
-      if (match) {
         await supabase.from("global_memory").delete().eq("id", match.id);
-        console.log(`Forgot memory (global_memory) [${(match as any).type}]: ${match.content}`);
+        console.log(`Forgot memory [${(match as any).type}]: ${match.content}`);
         return true;
       }
     }
 
-    const total = (memoryItems?.length || 0) + (globalItems?.length || 0);
+    const total = memoryItems?.length || 0;
     console.warn(`deleteMemory: no match found for "${searchText}" (searched ${total} entries)`);
     return false;
   } catch (e) {
@@ -632,7 +609,7 @@ async function getRelevantMemory(
   try {
     const word = query.split(" ")[0];
     const { data, error } = await supabase
-      .from("memory")
+      .from("global_memory")
       .select("content, type")
       .ilike("content", `%${word}%`)
       .in("type", ["fact", "goal", "preference", "strategy", "action"])
