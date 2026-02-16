@@ -95,8 +95,28 @@ function killOrphanedClaudeProcesses() {
 }
 
 /**
+ * Check if a PID is a systemd user session (indicates orphan reparenting on modern systems).
+ */
+function isSystemdUserSession(pid: number): boolean {
+  try {
+    const result = Bun.spawnSync(["bash", "-c",
+      `ps -o command -p ${pid} 2>/dev/null | grep -q 'systemd.*--user' && echo yes || echo no`
+    ]);
+    const output = new TextDecoder().decode(result.stdout).trim();
+    return output === "yes";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Kill zombie bun processes (relay.ts, agent-loop.ts) from previous PM2 instances.
  * PM2 restarts can leave old bun processes running as orphans.
+ *
+ * Orphans are detected by:
+ * 1. ppid=1 (traditional init)
+ * 2. ppid points to systemd --user (modern user sessions)
+ * 3. Process is NOT a direct child of PM2 god daemon
  */
 function killZombieBunProcesses() {
   try {
@@ -107,6 +127,22 @@ function killZombieBunProcesses() {
     if (!output) return 0;
 
     const currentPid = process.pid;
+
+    // Find PM2 god daemon PID to identify legitimate PM2 children
+    let pm2GodPid: number | null = null;
+    try {
+      const pm2Result = Bun.spawnSync(["bash", "-c",
+        `ps -eo pid,command | grep 'PM2.*God Daemon' | grep -v grep | head -1`
+      ]);
+      const pm2Output = new TextDecoder().decode(pm2Result.stdout).trim();
+      const pm2Match = pm2Output.match(/^(\d+)/);
+      if (pm2Match) {
+        pm2GodPid = parseInt(pm2Match[1]);
+      }
+    } catch {
+      // PM2 may not be running
+    }
+
     let killed = 0;
 
     for (const line of output.split("\n")) {
@@ -119,9 +155,15 @@ function killZombieBunProcesses() {
         // Skip our own process
         if (pid === currentPid) continue;
 
-        // Kill if orphaned (ppid=1 means parent died, likely PM2 restart)
-        // Also kill if ppid matches a dead process or is not PM2's god process
-        if (ppid === 1) {
+        // Check if this is a zombie/orphan:
+        // 1. ppid=1 (traditional init adoption)
+        // 2. Parent is systemd --user (modern session adoption)
+        // 3. NOT a child of PM2 god daemon
+        const isTraditionalOrphan = ppid === 1;
+        const isSystemdUserOrphan = isSystemdUserSession(ppid);
+        const isPm2Child = pm2GodPid !== null && ppid === pm2GodPid;
+
+        if ((isTraditionalOrphan || isSystemdUserOrphan) && !isPm2Child) {
           try {
             process.kill(pid, "SIGTERM");
             console.log(`[AGENT] Killed zombie bun process ${pid}: ${cmd.substring(0, 60)}`);
