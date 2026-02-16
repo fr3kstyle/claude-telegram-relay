@@ -21,6 +21,7 @@ import { readFile, writeFile } from "fs/promises";
 import { join, dirname } from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { processMemoryIntents } from "./memory.ts";
+import { execSync } from "child_process";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
@@ -125,14 +126,46 @@ interface ExecutionResult {
   attempts: number;
 }
 
+/**
+ * Check available memory before spawning Claude.
+ * Returns available memory in MB, or -1 if check fails.
+ */
+function getAvailableMemoryMB(): number {
+  try {
+    const output = execSync("cat /proc/meminfo | grep MemAvailable", { encoding: "utf-8" });
+    const match = output.match(/(\d+)/);
+    return match ? Math.floor(parseInt(match[1]) / 1024) : -1; // Convert KB to MB
+  } catch {
+    return -1;
+  }
+}
+
+/**
+ * Check if we're under memory pressure.
+ * Returns true if available memory is below threshold (default 500MB).
+ */
+function isUnderMemoryPressure(thresholdMB: number = 500): boolean {
+  const availableMB = getAvailableMemoryMB();
+  if (availableMB === -1) return false; // If we can't check, proceed
+  return availableMB < thresholdMB;
+}
+
 async function callClaudeWithRetry(
   prompt: string,
   maxRetries: number = 3
 ): Promise<ExecutionResult> {
   let lastError = "";
   const TIMEOUT_MS = parseInt(process.env.AGENT_TIMEOUT || "600000"); // 10 minute default
+  const MIN_MEMORY_MB = 500; // Don't spawn if less than this available
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // Memory pressure guard - don't spawn if system is low on memory
+    const availableMB = getAvailableMemoryMB();
+    if (availableMB !== -1 && availableMB < MIN_MEMORY_MB) {
+      console.log(`[AGENT] Memory pressure detected: ${availableMB}MB available (threshold: ${MIN_MEMORY_MB}MB). Skipping cycle.`);
+      return { success: false, output: "", error: `Memory pressure: only ${availableMB}MB available. Skipping to prevent OOM.`, attempts: attempt };
+    }
+
     console.log(`[Attempt ${attempt}/${maxRetries}] Calling Claude...`);
 
     try {
@@ -154,6 +187,13 @@ async function callClaudeWithRetry(
 
       lastError = stderr || `Exit code ${exitCode}`;
       console.log(`[AGENT] Claude exited with code ${exitCode}: ${lastError.substring(0, 100)}`);
+
+      // Detect OOM kill (137 = SIGKILL, 139 = SIGSEGV) - do NOT retry these
+      // Retrying OOM kills just spawns more processes that also get killed
+      if (exitCode === 137 || exitCode === 139 || exitCode === 143) {
+        console.log(`[AGENT] OOM/Signal kill detected (exit ${exitCode}), aborting retries to prevent cascade`);
+        return { success: false, output: "", error: `Process killed by signal (exit ${exitCode}) - likely OOM. Aborting to prevent retry loop.`, attempts: attempt };
+      }
 
       // If not last attempt, ask Claude to fix and retry
       if (attempt < maxRetries) {
