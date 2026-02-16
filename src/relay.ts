@@ -99,6 +99,21 @@ function sanitizeFilename(name: string): string {
 const CLAUDE_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 min of no output = stuck
 const MAX_OUTPUT_SIZE = 1024 * 1024; // 1MB
 
+// Circuit breakers for external APIs
+const groqCircuitBreaker = circuitBreakers.get("groq-whisper", {
+  failureThreshold: 3,
+  resetTimeout: 60000, // 1 minute
+  onOpen: (name, failures) => console.log(`[CircuitBreaker:${name}] OPEN after ${failures} failures - Groq API unavailable`),
+  onClose: (name) => console.log(`[CircuitBreaker:${name}] CLOSED - Groq API recovered`),
+});
+
+const elevenLabsCircuitBreaker = circuitBreakers.get("elevenlabs-tts", {
+  failureThreshold: 3,
+  resetTimeout: 60000, // 1 minute
+  onOpen: (name, failures) => console.log(`[CircuitBreaker:${name}] OPEN after ${failures} failures - ElevenLabs TTS unavailable`),
+  onClose: (name) => console.log(`[CircuitBreaker:${name}] CLOSED - ElevenLabs TTS recovered`),
+});
+
 // Kill orphaned child processes left behind after Claude CLI timeout.
 // Finds processes whose parent was the killed Claude process (now reparented to PID 1)
 // and matches common patterns from skills/tools that Claude spawns.
@@ -2126,32 +2141,43 @@ async function transcribeAudio(audioPath: string): Promise<string> {
   );
   await ffmpeg.exited;
 
-  // Send to Groq Whisper API
+  // Send to Groq Whisper API (with circuit breaker protection)
   const audioBuffer = await readFile(wavPath);
   const formData = new FormData();
   formData.append("file", new Blob([audioBuffer], { type: "audio/wav" }), "audio.wav");
   formData.append("model", GROQ_WHISPER_MODEL);
   // No language param — let Whisper auto-detect for correct multilingual support
 
-  const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${GROQ_API_KEY}`,
-    },
-    body: formData,
-  });
+  try {
+    const response = await groqCircuitBreaker.execute(async () => {
+      return await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+        },
+        body: formData,
+      });
+    });
 
-  // Cleanup wav immediately
-  await unlink(wavPath).catch(() => {});
+    // Cleanup wav immediately
+    await unlink(wavPath).catch(() => {});
 
-  if (!response.ok) {
-    const errText = await response.text();
-    console.error(`Groq Whisper error ${response.status}: ${errText}`);
-    throw new Error(`Transcription failed: ${response.status}`);
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error(`Groq Whisper error ${response.status}: ${errText}`);
+      throw new Error(`Transcription failed: ${response.status}`);
+    }
+
+    const result = await response.json() as { text: string };
+    return result.text.trim();
+  } catch (error) {
+    // Cleanup wav on error too
+    await unlink(wavPath).catch(() => {});
+    if (error instanceof CircuitOpenError) {
+      throw new Error(`Voice transcription temporarily unavailable (Groq API circuit open). Please try again in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`);
+    }
+    throw error;
   }
-
-  const result = await response.json() as { text: string };
-  return result.text.trim();
 }
 
 // ============================================================
@@ -2206,31 +2232,39 @@ async function textToSpeechEdge(text: string): Promise<Buffer | null> {
 async function textToSpeechElevenLabs(text: string): Promise<Buffer | null> {
   if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) return null;
 
+  // Check if circuit is open before attempting
+  if (elevenLabsCircuitBreaker.isOpen()) {
+    console.log("[TTS] ElevenLabs circuit is open, falling back to Edge TTS");
+    return null;
+  }
+
   try {
     const ttsText = text.length > TTS_MAX_CHARS
       ? text.substring(0, TTS_MAX_CHARS) + "..."
       : text;
 
-    const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=opus_48000_64`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "xi-api-key": ELEVENLABS_API_KEY,
-        },
-        body: JSON.stringify({
-          text: ttsText,
-          model_id: "eleven_v3",
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75,
-            style: 0.0,
-            use_speaker_boost: true,
+    const response = await elevenLabsCircuitBreaker.execute(async () => {
+      return await fetch(
+        `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=opus_48000_64`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "xi-api-key": ELEVENLABS_API_KEY,
           },
-        }),
-      }
-    );
+          body: JSON.stringify({
+            text: ttsText,
+            model_id: "eleven_v3",
+            voice_settings: {
+              stability: 0.5,
+              similarity_boost: 0.75,
+              style: 0.0,
+              use_speaker_boost: true,
+            },
+          }),
+        }
+      );
+    });
 
     if (!response.ok) {
       const errText = await response.text();
@@ -2240,6 +2274,10 @@ async function textToSpeechElevenLabs(text: string): Promise<Buffer | null> {
 
     return Buffer.from(await response.arrayBuffer());
   } catch (error) {
+    if (error instanceof CircuitOpenError) {
+      console.log(`[TTS] ElevenLabs circuit open, falling back to Edge TTS`);
+      return null;
+    }
     console.error("ElevenLabs TTS error:", error);
     return null;
   }
