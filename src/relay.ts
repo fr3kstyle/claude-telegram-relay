@@ -1215,6 +1215,73 @@ function stopCronScheduler(): void {
 // HEARTBEAT TIMER (Infrastructure — Phase 6)
 // ============================================================
 
+/**
+ * Clean up orphaned files in uploads and temp directories
+ *
+ * Removes files older than 1 hour that weren't cleaned up due to crashes/errors.
+ * Called at the start of each heartbeat cycle.
+ */
+async function cleanupOrphanedFiles(): Promise<{ uploads: number; temp: number }> {
+  const ONE_HOUR_AGO = Date.now() - 60 * 60 * 1000;
+  let uploadsCleaned = 0;
+  let tempCleaned = 0;
+
+  // Clean uploads directory
+  try {
+    const uploadsFiles = await readdir(UPLOADS_DIR);
+    for (const file of uploadsFiles) {
+      const filePath = join(UPLOADS_DIR, file);
+      try {
+        const stat = await Bun.file(filePath).exists().then(() => Bun.file(filePath));
+        // @ts-ignore - Bun.file has lastModified
+        const lastModified = (await Bun.file(filePath).text().catch(() => null)) ? Date.now() : 0;
+        // Use file name timestamp as fallback (files are named with timestamps)
+        const timestampMatch = file.match(/(\d{13})/);
+        const fileTime = timestampMatch ? parseInt(timestampMatch[1]) : 0;
+        if (fileTime > 0 && fileTime < ONE_HOUR_AGO) {
+          await unlink(filePath).catch(() => {});
+          uploadsCleaned++;
+        }
+      } catch {
+        // Skip files we can't stat
+      }
+    }
+  } catch {
+    // Directory doesn't exist or can't read
+  }
+
+  // Clean temp directory
+  try {
+    const tempFiles = await readdir(TEMP_DIR);
+    for (const file of tempFiles) {
+      const filePath = join(TEMP_DIR, file);
+      try {
+        // Use file name timestamp as fallback
+        const timestampMatch = file.match(/(\d{13})/);
+        const fileTime = timestampMatch ? parseInt(timestampMatch[1]) : 0;
+        if (fileTime > 0 && fileTime < ONE_HOUR_AGO) {
+          await unlink(filePath).catch(() => {});
+          tempCleaned++;
+        }
+      } catch {
+        // Skip files we can't process
+      }
+    }
+  } catch {
+    // Directory doesn't exist or can't read
+  }
+
+  if (uploadsCleaned > 0 || tempCleaned > 0) {
+    console.log(`Cleanup: removed ${uploadsCleaned} orphaned uploads, ${tempCleaned} orphaned temp files`);
+    await logEventV2("orphan_cleanup", "Cleaned orphaned files", {
+      uploads_cleaned: uploadsCleaned,
+      temp_cleaned: tempCleaned,
+    });
+  }
+
+  return { uploads: uploadsCleaned, temp: tempCleaned };
+}
+
 async function heartbeatTick(): Promise<void> {
   if (heartbeatRunning) {
     console.log("Heartbeat: skipping (previous tick still running)");
@@ -1244,6 +1311,9 @@ async function heartbeatTick(): Promise<void> {
     await logEventV2("heartbeat_tick", "Heartbeat timer fired", {
       interval_minutes: config.interval_minutes,
     });
+
+    // Step 0: Clean up orphaned files from crashes/errors
+    await cleanupOrphanedFiles();
 
     // Step 1: Read HEARTBEAT.md checklist
     const checklist = await readHeartbeatChecklist();

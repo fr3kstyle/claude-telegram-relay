@@ -291,6 +291,78 @@ export class EmailProviderFactory {
   }
 
   /**
+   * Register a new email account in the database
+   *
+   * Called after OAuth flow completes successfully.
+   */
+  async registerAccount(options: {
+    emailAddress: string;
+    providerType: EmailProviderType;
+    displayName?: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    const db = this.getSupabase();
+    if (!db) {
+      return { success: false, error: 'Database not configured' };
+    }
+
+    try {
+      // Check if account already exists
+      const { data: existing, error: checkError } = await db
+        .from('email_accounts')
+        .select('id')
+        .eq('email', options.emailAddress)
+        .maybeSingle();
+
+      if (checkError && checkError.code !== 'PGRST116') {
+        return { success: false, error: checkError.message };
+      }
+
+      if (existing) {
+        // Update existing account to active
+        const { error: updateError } = await db
+          .from('email_accounts')
+          .update({
+            is_active: true,
+            sync_enabled: true,
+            display_name: options.displayName || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existing.id);
+
+        if (updateError) {
+          return { success: false, error: updateError.message };
+        }
+
+        console.log(`[ProviderFactory] Updated account: ${options.emailAddress}`);
+        return { success: true };
+      }
+
+      // Insert new account
+      const { error: insertError } = await db
+        .from('email_accounts')
+        .insert({
+          email: options.emailAddress,
+          provider: options.providerType,
+          display_name: options.displayName || null,
+          is_active: true,
+          sync_enabled: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+
+      if (insertError) {
+        return { success: false, error: insertError.message };
+      }
+
+      console.log(`[ProviderFactory] Registered new account: ${options.emailAddress}`);
+      return { success: true };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  /**
    * Get a single provider by email address
    *
    * Discovers the account from the database or creates from fallback.
