@@ -58,6 +58,7 @@ const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "";
 const TTS_PROVIDER = process.env.TTS_PROVIDER || (ELEVENLABS_API_KEY ? "elevenlabs" : "edge");
 const EDGE_TTS_VOICE = process.env.EDGE_TTS_VOICE || "en-US-AriaNeural";
 const EDGE_TTS_SPEED = process.env.EDGE_TTS_SPEED || "1.3";
+const EDGE_TTS_PATH = process.env.EDGE_TTS_PATH || "/home/radxa/.local/bin/edge-tts";
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY || "";
 
 const TELEGRAM_GROUP_ID = process.env.TELEGRAM_GROUP_ID || "";
@@ -1823,7 +1824,7 @@ async function textToSpeechEdge(text: string): Promise<Buffer | null> {
     // Run edge-tts
     const proc = spawn({
       cmd: [
-        "edge-tts",
+        EDGE_TTS_PATH,
         "--voice", EDGE_TTS_VOICE,
         "--rate", `+${Math.round((parseFloat(EDGE_TTS_SPEED) - 1) * 100)}%`,
         "--text", ttsText,
