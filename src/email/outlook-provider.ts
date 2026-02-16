@@ -2,10 +2,10 @@
  * Outlook Provider Implementation
  *
  * Implements EmailProvider interface using Microsoft Graph API.
- * Uses OAuth tokens from microsoft-oauth.ts module.
+ * Uses encrypted OAuth tokens from TokenManager with database storage.
  */
 
-import { getValidAccessToken } from '../microsoft-oauth.ts';
+import { getTokenManager } from '../auth/token-manager.ts';
 import type {
   EmailProvider,
   EmailMessage,
@@ -21,6 +21,7 @@ import type {
 } from './types.ts';
 
 const GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0';
+const TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
 
 // Microsoft Graph API types
 interface GraphMessageRecipient {
@@ -116,25 +117,90 @@ function graphToEmailMessage(graph: GraphMessageResponse): EmailMessage {
 }
 
 /**
+ * Load Microsoft OAuth credentials
+ */
+async function loadCredentials(): Promise<{ client_id: string; client_secret: string }> {
+  const { readFile } = await import('fs/promises');
+  const { existsSync } = await import('fs');
+  const { join } = await import('path');
+
+  const RELAY_DIR = join(process.env.HOME || '~', '.claude-relay');
+  const CREDENTIALS_FILE = join(RELAY_DIR, 'microsoft-credentials.json');
+
+  if (!existsSync(CREDENTIALS_FILE)) {
+    throw new Error(
+      `Microsoft credentials file not found: ${CREDENTIALS_FILE}\n` +
+      `Download it from Azure Portal > App registrations > Certificates & secrets`
+    );
+  }
+
+  const content = await readFile(CREDENTIALS_FILE, 'utf-8');
+  const creds = JSON.parse(content);
+  return {
+    client_id: creds.client_id,
+    client_secret: creds.client_secret,
+  };
+}
+
+/**
+ * Microsoft token refresh callback for TokenManager
+ */
+async function refreshMicrosoftToken(refreshToken: string): Promise<{ accessToken: string; refreshToken?: string; expiresIn: number }> {
+  const { client_id, client_secret } = await loadCredentials();
+
+  const response = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      refresh_token: refreshToken,
+      client_id,
+      client_secret,
+      grant_type: 'refresh_token',
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Microsoft token refresh failed: ${error}`);
+  }
+
+  const data = await response.json();
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token || undefined, // Only include if returned
+    expiresIn: data.expires_in,
+  };
+}
+
+// Register refresh callback with TokenManager on first use
+let refreshCallbackRegistered = false;
+
+function ensureRefreshCallback(): void {
+  if (!refreshCallbackRegistered) {
+    getTokenManager().registerRefreshCallback('microsoft', refreshMicrosoftToken);
+    refreshCallbackRegistered = true;
+  }
+}
+
+/**
  * Outlook Email Provider
  */
 export class OutlookProvider implements EmailProvider {
   private email: string;
-  private accessToken: string | null = null;
 
   constructor(email: string) {
     this.email = email;
+    ensureRefreshCallback();
   }
 
   /**
    * Get authorization header with valid access token
    */
   private async getAuthHeaders(): Promise<Record<string, string>> {
-    if (!this.accessToken) {
-      this.accessToken = await getValidAccessToken(this.email);
-    }
+    const accessToken = await getTokenManager().getAccessToken('microsoft', this.email);
     return {
-      Authorization: `Bearer ${this.accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     };
   }
@@ -151,9 +217,10 @@ export class OutlookProvider implements EmailProvider {
 
     if (!response.ok) {
       const error = await response.text();
-      // Token might be expired, try to refresh
+      // Token might be expired - invalidate and retry
+      // TokenManager will handle getting a fresh token on next getAccessToken call
       if (response.status === 401) {
-        this.accessToken = null;
+        await getTokenManager().invalidateToken('microsoft', this.email, 'Graph API 401 - token expired');
         const newHeaders = await this.getAuthHeaders();
         const retryResponse = await fetch(`${GRAPH_API_BASE}${endpoint}`, {
           ...options,
@@ -190,14 +257,14 @@ export class OutlookProvider implements EmailProvider {
   }
 
   async authenticate(): Promise<void> {
-    this.accessToken = await getValidAccessToken(this.email);
-    // Verify by fetching user profile
+    // Verify by fetching user profile - TokenManager handles token retrieval/refresh
     await this.fetchApi('/me');
   }
 
   async isAuthenticated(): Promise<boolean> {
     try {
-      await this.authenticate();
+      // Check if we can get a valid access token
+      await getTokenManager().getAccessToken('microsoft', this.email);
       return true;
     } catch {
       return false;

@@ -2153,6 +2153,7 @@ function createLivenessReporter(
   // PROG-01 + PROG-02: Throttled progress messages
   let statusMessageId: number | null = null;
   let lastProgressAt = 0;
+  let lastProgressText = "";
   let pendingTools: string[] = [];
   let sendingProgress = false; // Guard against overlapping sends
 
@@ -2180,6 +2181,13 @@ function createLivenessReporter(
     const display = unique.map(formatToolName).join(", ");
     const text = `🔄 ${display}...`;
 
+    // Skip if text hasn't changed (avoids "message is not modified" errors)
+    if (text === lastProgressText) {
+      sendingProgress = false;
+      return;
+    }
+    lastProgressText = text;
+
     try {
       if (statusMessageId) {
         console.log(`[Liveness] Editing progress: "${text}"`);
@@ -2193,7 +2201,10 @@ function createLivenessReporter(
         console.log(`[Liveness] Progress message sent: id=${statusMessageId}`);
       }
     } catch (err: any) {
-      console.error(`[Liveness] Failed to send/edit progress: ${err.message}`);
+      // Silently ignore "message is not modified" errors
+      if (!err.message?.includes("message is not modified")) {
+        console.error(`[Liveness] Failed to send/edit progress: ${err.message}`);
+      }
     } finally {
       sendingProgress = false;
     }

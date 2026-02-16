@@ -2,7 +2,7 @@
  * Token Manager Service
  *
  * Unified OAuth token management with encrypted database storage.
- * Supports multiple providers (Google, Microsoft, etc.) with automatic refresh.
+ * Supports multiple providers (Google, Microsoft, GitHub, etc.) with automatic refresh.
  *
  * Usage:
  *   const tokenManager = getTokenManager();
