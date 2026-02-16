@@ -393,8 +393,11 @@ async function insertMemory(
     const row: Record<string, unknown> = {
       content,
       type,
-      source_thread_id: sourceThreadId || null,
     };
+    // Store thread_id in metadata (memory table doesn't have source_thread_id column)
+    if (sourceThreadId) {
+      row.metadata = { source_thread_id: sourceThreadId };
+    }
     if (deadline) {
       const parsed = new Date(deadline);
       if (!isNaN(parsed.getTime())) {
@@ -2937,11 +2940,114 @@ bot.command("email", async (ctx) => {
     return;
   }
 
+  // /email list [drafts|starred|important] - list managed items
+  if (args === "list" || args.startsWith("list ")) {
+    const subArg = args.startsWith("list ") ? args.substring(5).trim() : "";
+
+    try {
+      await ctx.reply("📋 Fetching managed items...");
+
+      let text = `<b>📋 Managed Email Items</b> - ${email}\n\n`;
+
+      // If specific category requested
+      if (subArg === "drafts") {
+        const drafts = await listEmails(email, { maxResults: 15, labelIds: ["DRAFT"] });
+        text += `<b>Drafts (${drafts.length})</b>\n`;
+        if (drafts.length === 0) {
+          text += "No drafts found.\n";
+        } else {
+          drafts.forEach((msg, i) => {
+            const subject = msg.subject || "(No subject)";
+            const date = msg.date ? new Date(msg.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
+            text += `${i + 1}. ${subject}\n   ${date} • ID: ${msg.id}\n`;
+          });
+        }
+      } else if (subArg === "starred") {
+        const starred = await listEmails(email, { maxResults: 15, labelIds: ["STARRED"] });
+        text += `<b>Starred (${starred.length})</b>\n`;
+        if (starred.length === 0) {
+          text += "No starred emails.\n";
+        } else {
+          starred.forEach((msg, i) => {
+            const unread = msg.unread ? "🔵" : "⚪";
+            const from = msg.from?.split("<")[0].trim() || "Unknown";
+            const subject = msg.subject || "(No subject)";
+            text += `${unread} ${i + 1}. ${from}: ${subject}\n   ID: ${msg.id}\n`;
+          });
+        }
+      } else if (subArg === "important") {
+        const important = await listEmails(email, { maxResults: 15, labelIds: ["IMPORTANT"] });
+        text += `<b>Important (${important.length})</b>\n`;
+        if (important.length === 0) {
+          text += "No important emails.\n";
+        } else {
+          important.forEach((msg, i) => {
+            const unread = msg.unread ? "🔵" : "⚪";
+            const from = msg.from?.split("<")[0].trim() || "Unknown";
+            const subject = msg.subject || "(No subject)";
+            text += `${unread} ${i + 1}. ${from}: ${subject}\n   ID: ${msg.id}\n`;
+          });
+        }
+      } else {
+        // Show summary of all categories
+        const [drafts, starred, important] = await Promise.all([
+          listEmails(email, { maxResults: 5, labelIds: ["DRAFT"] }),
+          listEmails(email, { maxResults: 5, labelIds: ["STARRED"] }),
+          listEmails(email, { maxResults: 5, labelIds: ["IMPORTANT"] }),
+        ]);
+
+        text += `<b>Drafts (${drafts.length})</b>\n`;
+        if (drafts.length === 0) {
+          text += "  No drafts\n";
+        } else {
+          drafts.forEach((msg, i) => {
+            const subject = msg.subject || "(No subject)";
+            text += `  ${i + 1}. ${subject}\n`;
+          });
+        }
+
+        text += `\n<b>Starred (${starred.length})</b>\n`;
+        if (starred.length === 0) {
+          text += "  No starred emails\n";
+        } else {
+          starred.forEach((msg, i) => {
+            const unread = msg.unread ? "🔵" : "";
+            const subject = msg.subject || "(No subject)";
+            text += `  ${unread}${i + 1}. ${subject}\n`;
+          });
+        }
+
+        text += `\n<b>Important (${important.length})</b>\n`;
+        if (important.length === 0) {
+          text += "  No important emails\n";
+        } else {
+          important.forEach((msg, i) => {
+            const unread = msg.unread ? "🔵" : "";
+            const subject = msg.subject || "(No subject)";
+            text += `  ${unread}${i + 1}. ${subject}\n`;
+          });
+        }
+
+        text += `\n<i>Use /email list drafts|starred|important for more details</i>`;
+      }
+
+      try {
+        await ctx.reply(text, { parse_mode: "HTML" });
+      } catch {
+        await ctx.reply(text.replace(/<[^>]*>/g, ""));
+      }
+    } catch (error) {
+      await ctx.reply(`❌ Failed to list items: ${error}`);
+    }
+    return;
+  }
+
   // Unknown subcommand
   await ctx.reply(
     "📧 Email Commands:\n\n" +
     "/email - Show inbox\n" +
     "/email inbox - Show inbox\n" +
+    "/email list - Show drafts, starred, important\n" +
     "/email read <id> - Read email\n" +
     "/email search <query> - Search emails\n" +
     "/email send <to> <subject> - Compose email\n" +
