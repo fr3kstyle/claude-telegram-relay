@@ -17,6 +17,8 @@ import {
   detectProviderFromDomain,
   sanitizeDisplayName,
   isValidProviderType,
+  detectCodeProvider,
+  validateCodeForProvider,
   EMAIL_ADD_USAGE,
   EMAIL_VERIFY_USAGE,
 } from "../command-parser.ts";
@@ -457,6 +459,209 @@ describe("parseEmailVerifyArgs", () => {
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.error).toContain("Invalid");
+      }
+    });
+  });
+});
+
+describe("detectCodeProvider", () => {
+  describe("Google OAuth codes", () => {
+    test("detects standard Google OAuth code", () => {
+      const result = detectCodeProvider("4/0AX4XfWh7lIqx-abc123def456ghi789jkl");
+      expect(result.provider).toBe("google");
+      expect(result.isValid).toBe(true);
+      expect(result.description).toContain("Google");
+    });
+
+    test("detects Google code starting with 4/", () => {
+      const result = detectCodeProvider("4/something");
+      expect(result.provider).toBe("google");
+    });
+
+    test("detects Google code with slashes and special chars", () => {
+      const result = detectCodeProvider("4/0AX4XfWh/Test_Code-123");
+      expect(result.provider).toBe("google");
+    });
+  });
+
+  describe("Microsoft OAuth codes", () => {
+    test("detects standard Microsoft OAuth code", () => {
+      const result = detectCodeProvider("M.C507_BAY.123-456-abc");
+      expect(result.provider).toBe("microsoft");
+      expect(result.isValid).toBe(true);
+      expect(result.description).toContain("Microsoft");
+    });
+
+    test("detects Microsoft code starting with M.", () => {
+      const result = detectCodeProvider("M.something123");
+      expect(result.provider).toBe("microsoft");
+    });
+
+    test("detects Microsoft code with region identifier", () => {
+      const result = detectCodeProvider("M.C507_SN1.ABC-xyz");
+      expect(result.provider).toBe("microsoft");
+    });
+  });
+
+  describe("unknown formats", () => {
+    test("returns unknown for empty code", () => {
+      const result = detectCodeProvider("");
+      expect(result.provider).toBe("unknown");
+      expect(result.isValid).toBe(false);
+    });
+
+    test("returns unknown for whitespace", () => {
+      const result = detectCodeProvider("   ");
+      expect(result.provider).toBe("unknown");
+    });
+
+    test("returns unknown for unrecognized format", () => {
+      const result = detectCodeProvider("random-code-xyz123");
+      expect(result.provider).toBe("unknown");
+    });
+
+    test("accepts unknown format if long enough", () => {
+      const result = detectCodeProvider("randomcodexyz12345678");
+      expect(result.provider).toBe("unknown");
+      expect(result.isValid).toBe(true);
+    });
+
+    test("rejects unknown format if too short", () => {
+      const result = detectCodeProvider("short");
+      expect(result.provider).toBe("unknown");
+      expect(result.isValid).toBe(false);
+    });
+  });
+
+  describe("edge cases", () => {
+    test("handles trimmed input", () => {
+      const result = detectCodeProvider("  4/0AX4XfWh  ");
+      expect(result.provider).toBe("google");
+    });
+
+    test("too-short Google code is invalid", () => {
+      const result = detectCodeProvider("4/short");
+      expect(result.provider).toBe("google");
+      expect(result.isValid).toBe(false);
+    });
+
+    test("too-short Microsoft code is invalid", () => {
+      const result = detectCodeProvider("M.short");
+      expect(result.provider).toBe("microsoft");
+      expect(result.isValid).toBe(false);
+    });
+  });
+});
+
+describe("validateCodeForProvider", () => {
+  describe("matching code and provider", () => {
+    test("accepts Google code with Gmail provider", () => {
+      const error = validateCodeForProvider("4/0AX4XfWh7lIqx-abc123", "gmail");
+      expect(error).toBeNull();
+    });
+
+    test("accepts Microsoft code with Outlook provider", () => {
+      const error = validateCodeForProvider("M.C507_BAY.123-456-abc-def-ghi-jkl", "outlook");
+      expect(error).toBeNull();
+    });
+
+    test("accepts unknown code format with any provider", () => {
+      const error = validateCodeForProvider("some-random-code", "gmail");
+      expect(error).toBeNull();
+    });
+  });
+
+  describe("mismatch detection", () => {
+    test("rejects Microsoft code with Gmail provider", () => {
+      const error = validateCodeForProvider("M.C507_BAY.123-456", "gmail");
+      expect(error).not.toBeNull();
+      expect(error).toContain("Microsoft");
+      expect(error).toContain("Gmail");
+    });
+
+    test("rejects Google code with Outlook provider", () => {
+      const error = validateCodeForProvider("4/0AX4XfWh7lIqx", "outlook");
+      expect(error).not.toBeNull();
+      expect(error).toContain("Google");
+      expect(error).toContain("Outlook");
+    });
+  });
+
+  describe("incomplete codes", () => {
+    test("warns about incomplete Google code", () => {
+      const error = validateCodeForProvider("4/short", "gmail");
+      expect(error).not.toBeNull();
+      expect(error).toContain("incomplete");
+    });
+
+    test("warns about incomplete Microsoft code", () => {
+      const error = validateCodeForProvider("M.short", "outlook");
+      expect(error).not.toBeNull();
+      expect(error).toContain("incomplete");
+    });
+  });
+
+  describe("other providers", () => {
+    test("accepts any code for IMAP provider", () => {
+      const error = validateCodeForProvider("anything", "imap");
+      expect(error).toBeNull();
+    });
+
+    test("accepts any code for SMTP provider", () => {
+      const error = validateCodeForProvider("anything", "smtp");
+      expect(error).toBeNull();
+    });
+  });
+});
+
+describe("parseEmailVerifyArgs with code validation", () => {
+  describe("with validateCodeFormat enabled", () => {
+    test("accepts matching code and provider", () => {
+      const result = parseEmailVerifyArgs(
+        "user@gmail.com 4/0AX4XfWh7lIqx-abc123def456",
+        { validateCodeFormat: true }
+      );
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.codeProvider).toBe("google");
+      }
+    });
+
+    test("rejects mismatched code and provider", () => {
+      const result = parseEmailVerifyArgs(
+        "user@gmail.com M.C507_BAY.123-456",
+        { validateCodeFormat: true }
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("Microsoft");
+        expect(result.error).toContain("Gmail");
+      }
+    });
+
+    test("accepts unknown code format", () => {
+      const result = parseEmailVerifyArgs(
+        "user@gmail.com custom-code-xyz",
+        { validateCodeFormat: true }
+      );
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe("codeProvider detection (always on)", () => {
+    test("includes codeProvider in successful result", () => {
+      const result = parseEmailVerifyArgs("user@gmail.com 4/0AX4XfWh");
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.codeProvider).toBe("google");
+      }
+    });
+
+    test("detects Microsoft code provider", () => {
+      const result = parseEmailVerifyArgs("user@outlook.com M.C507_BAY.123");
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.codeProvider).toBe("microsoft");
       }
     });
   });

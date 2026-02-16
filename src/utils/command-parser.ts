@@ -469,6 +469,137 @@ export function parseEmailAddArgs(input: string): EmailAddParseResult {
 }
 
 // ============================================================================
+// OAuth Code Validation
+// ============================================================================
+
+/**
+ * OAuth provider code patterns
+ * Google codes: start with "4/", contain forward slashes
+ * Microsoft codes: start with "M.", contain dots and underscores
+ */
+export const GOOGLE_CODE_PATTERN = /^4\/[A-Za-z0-9_\-+/]+$/;
+export const MICROSOFT_CODE_PATTERN = /^M\.[A-Za-z0-9_.\-]+$/;
+
+/**
+ * Detected OAuth code provider type
+ */
+export type CodeProviderType = 'google' | 'microsoft' | 'unknown';
+
+/**
+ * Result of code format detection
+ */
+export interface CodeDetectionResult {
+  /** Detected provider type */
+  provider: CodeProviderType;
+  /** Whether the code appears valid for the detected provider */
+  isValid: boolean;
+  /** Human-readable description of the detected format */
+  description: string;
+}
+
+/**
+ * Detect OAuth code provider from format
+ *
+ * Google OAuth codes typically:
+ * - Start with "4/"
+ * - Contain forward slashes, underscores, hyphens
+ * - Are relatively long (40+ chars)
+ *
+ * Microsoft OAuth codes typically:
+ * - Start with "M."
+ * - Contain dots, underscores, hyphens
+ * - Include region identifiers like "BAY", "SN1"
+ */
+export function detectCodeProvider(code: string): CodeDetectionResult {
+  const trimmed = code.trim();
+
+  // Empty code
+  if (!trimmed) {
+    return {
+      provider: 'unknown',
+      isValid: false,
+      description: 'Empty authorization code',
+    };
+  }
+
+  // Check for Google format
+  if (GOOGLE_CODE_PATTERN.test(trimmed)) {
+    return {
+      provider: 'google',
+      isValid: trimmed.length >= 20, // Reasonable minimum length
+      description: 'Google OAuth code (starts with 4/)',
+    };
+  }
+
+  // Check for Microsoft format
+  if (MICROSOFT_CODE_PATTERN.test(trimmed)) {
+    return {
+      provider: 'microsoft',
+      isValid: trimmed.length >= 20, // Reasonable minimum length
+      description: 'Microsoft OAuth code (starts with M.)',
+    };
+  }
+
+  // Heuristic detection for partial/modified codes
+  if (trimmed.startsWith('4/')) {
+    return {
+      provider: 'google',
+      isValid: true, // Assume valid if it starts correctly
+      description: 'Likely Google OAuth code (starts with 4/)',
+    };
+  }
+
+  if (trimmed.startsWith('M.') || trimmed.startsWith('M.C')) {
+    return {
+      provider: 'microsoft',
+      isValid: true, // Assume valid if it starts correctly
+      description: 'Likely Microsoft OAuth code (starts with M.)',
+    };
+  }
+
+  // Unknown format - might still be valid for custom OAuth flows
+  return {
+    provider: 'unknown',
+    isValid: trimmed.length >= 10, // Basic length check
+    description: 'Unrecognized code format',
+  };
+}
+
+/**
+ * Validate that code format matches expected email provider
+ * Returns null if valid, or an error message if mismatch
+ */
+export function validateCodeForProvider(
+  code: string,
+  emailProvider: EmailProviderType
+): string | null {
+  const detection = detectCodeProvider(code);
+
+  // If we can't detect the format, allow it (might be custom flow)
+  if (detection.provider === 'unknown') {
+    return null;
+  }
+
+  // Check for mismatches
+  if (emailProvider === 'gmail' && detection.provider === 'microsoft') {
+    return `Code appears to be a Microsoft OAuth code but email provider is Gmail. ` +
+           `Please use the code from your Google authorization.`;
+  }
+
+  if (emailProvider === 'outlook' && detection.provider === 'google') {
+    return `Code appears to be a Google OAuth code but email provider is Outlook. ` +
+           `Please use the code from your Microsoft authorization.`;
+  }
+
+  // Warn about potentially too-short codes
+  if (!detection.isValid && detection.provider !== 'unknown') {
+    return `Code appears incomplete or truncated. Please paste the full authorization code.`;
+  }
+
+  return null;
+}
+
+// ============================================================================
 // Email Verify Command Parser
 // ============================================================================
 
@@ -480,6 +611,8 @@ export interface EmailVerifyArgs {
   email: string;
   /** OAuth authorization code (may contain spaces if URL-encoded) */
   code: string;
+  /** Detected code provider (optional, set during validation) */
+  codeProvider?: CodeProviderType;
 }
 
 /**
@@ -508,9 +641,14 @@ The authorization code may be long and contain special characters.`;
  * - Case-insensitive email
  * - Invalid email format
  * - Missing email or code
+ * - Code format validation (Google vs Microsoft)
  */
-export function parseEmailVerifyArgs(input: string): EmailVerifyParseResult {
+export function parseEmailVerifyArgs(
+  input: string,
+  options?: { validateCodeFormat?: boolean }
+): EmailVerifyParseResult {
   const trimmed = input.trim();
+  const shouldValidateCode = options?.validateCodeFormat ?? false;
 
   if (!trimmed) {
     return {
@@ -551,11 +689,30 @@ export function parseEmailVerifyArgs(input: string): EmailVerifyParseResult {
     };
   }
 
+  // Detect code provider for informational purposes
+  const codeDetection = detectCodeProvider(code);
+
+  // Optional: validate code format matches email provider
+  if (shouldValidateCode) {
+    const emailProvider = detectProviderFromDomain(email);
+    if (emailProvider) {
+      const validationError = validateCodeForProvider(code, emailProvider);
+      if (validationError) {
+        return {
+          success: false,
+          error: validationError,
+          usage: EMAIL_VERIFY_USAGE,
+        };
+      }
+    }
+  }
+
   return {
     success: true,
     data: {
       email,
       code,
+      codeProvider: codeDetection.provider,
     },
     remaining: '',
   };
