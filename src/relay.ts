@@ -1505,6 +1505,20 @@ async function buildHeartbeatPrompt(checklist: string): Promise<string> {
   const memoryFacts = await getMemoryContext();
   const activeGoals = await getActiveGoals();
 
+  // Fetch email context (gracefully handles errors)
+  let emailContext = "";
+  try {
+    const emailData = await fetchEmailContext({
+      maxEmails: 5,
+      includeRead: false,
+      maxAgeHours: 24,
+    });
+    emailContext = formatEmailContextForHeartbeat(emailData);
+  } catch (error) {
+    console.error("[Heartbeat] Failed to fetch email context:", error);
+    emailContext = "Email context unavailable (API error)";
+  }
+
   // Task instructions come FIRST so Claude doesn't get distracted by the soul personality
   let prompt = `HEARTBEAT TASK — YOU MUST FOLLOW THESE INSTRUCTIONS:
 You are performing a periodic heartbeat check-in. Your job is to execute EVERY item in the checklist below. Do NOT skip any items. Do NOT just greet the user — you MUST actually perform the checks (e.g., search the web for weather) and report results.
@@ -1545,6 +1559,9 @@ RULES:
       })
       .join("\n");
   }
+
+  // Add email context
+  prompt += `\n\nRECENT EMAILS:\n${emailContext}`;
 
   return prompt.trim();
 }
