@@ -17,6 +17,7 @@ import { join, basename } from "path";
 import { createClient } from "@supabase/supabase-js";
 import { Cron } from "croner";
 import { searchMemoryLocal, generateEmbedding } from "./embed-local.ts";
+import { listEmails, sendEmail, getAuthorizedAccounts, isAccountAuthorized } from "./google-apis.ts";
 
 // ============================================================
 // THREAD CONTEXT TYPES
@@ -2741,6 +2742,184 @@ bot.command("cron", async (ctx) => {
     "/cron remove <number>\n" +
     "/cron enable <number>\n" +
     "/cron disable <number>"
+  );
+});
+
+// /email command: check emails via Gmail API
+bot.command("email", async (ctx) => {
+  const args = (ctx.match || "").trim();
+
+  // Check if any Google accounts are authorized
+  const accounts = await getAuthorizedAccounts();
+  if (accounts.length === 0) {
+    await ctx.reply(
+      "⚠️ No Google accounts authorized.\n\n" +
+      "To set up email access:\n" +
+      "1. Create OAuth credentials in Google Cloud Console\n" +
+      "2. Save credentials to ~/.claude-relay/google-credentials.json\n" +
+      "3. Run: bun run src/google-oauth.ts\n" +
+      "4. Visit the URL and authorize each account"
+    );
+    return;
+  }
+
+  // Default account is the first one
+  const email = accounts[0];
+
+  // /email - list recent inbox
+  if (!args || args === "inbox") {
+    try {
+      await ctx.reply("📧 Fetching emails...");
+      const emails = await listEmails(email, { maxResults: 10, labelIds: ["INBOX"] });
+
+      if (emails.length === 0) {
+        await ctx.reply("No emails found in inbox.");
+        return;
+      }
+
+      let text = `<b>📧 Inbox (${emails.length})</b> - ${email}\n\n`;
+      emails.forEach((msg, i) => {
+        const unread = msg.unread ? "🔵" : "⚪";
+        const from = msg.from?.split("<")[0].trim() || "Unknown";
+        const subject = msg.subject || "(No subject)";
+        const date = msg.date ? new Date(msg.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
+        text += `${unread} <b>${i + 1}.</b> ${from}\n`;
+        text += `   ${subject}\n`;
+        text += `   ${date} • ID: ${msg.id}\n\n`;
+      });
+
+      text += `Commands:\n/email read <id>\n/email send <to> <subject>\n/email search <query>`;
+
+      try {
+        await ctx.reply(text, { parse_mode: "HTML" });
+      } catch {
+        await ctx.reply(text.replace(/<[^>]*>/g, ""));
+      }
+    } catch (error) {
+      await ctx.reply(`❌ Failed to fetch emails: ${error}`);
+    }
+    return;
+  }
+
+  // /email read <id>
+  if (args.startsWith("read ")) {
+    const id = args.substring(5).trim();
+    if (!id) {
+      await ctx.reply("Usage: /email read <message_id>");
+      return;
+    }
+
+    try {
+      const { getEmail } = await import("./google-apis.ts");
+      const msg = await getEmail(email, id);
+      if (!msg) {
+        await ctx.reply("Email not found.");
+        return;
+      }
+
+      let text = `<b>📧 ${msg.subject || "(No subject)"}</b>\n\n`;
+      text += `From: ${msg.from || "Unknown"}\n`;
+      text += `Date: ${msg.date || "Unknown"}\n\n`;
+      text += `${msg.body?.substring(0, 2000) || msg.snippet || "(No content)"}${msg.body && msg.body.length > 2000 ? "..." : ""}`;
+
+      try {
+        await ctx.reply(text, { parse_mode: "HTML" });
+      } catch {
+        await ctx.reply(text.replace(/<[^>]*>/g, ""));
+      }
+    } catch (error) {
+      await ctx.reply(`❌ Failed to read email: ${error}`);
+    }
+    return;
+  }
+
+  // /email search <query>
+  if (args.startsWith("search ")) {
+    const query = args.substring(7).trim();
+    if (!query) {
+      await ctx.reply("Usage: /email search <query>");
+      return;
+    }
+
+    try {
+      await ctx.reply(`🔍 Searching for: ${query}`);
+      const emails = await listEmails(email, { query, maxResults: 10 });
+
+      if (emails.length === 0) {
+        await ctx.reply("No emails found matching your search.");
+        return;
+      }
+
+      let text = `<b>🔍 Search Results (${emails.length})</b>\n\n`;
+      emails.forEach((msg, i) => {
+        const unread = msg.unread ? "🔵" : "⚪";
+        const from = msg.from?.split("<")[0].trim() || "Unknown";
+        const subject = msg.subject || "(No subject)";
+        text += `${unread} <b>${i + 1}.</b> ${from}\n   ${subject}\n   ID: ${msg.id}\n\n`;
+      });
+
+      try {
+        await ctx.reply(text, { parse_mode: "HTML" });
+      } catch {
+        await ctx.reply(text.replace(/<[^>]*>/g, ""));
+      }
+    } catch (error) {
+      await ctx.reply(`❌ Search failed: ${error}`);
+    }
+    return;
+  }
+
+  // /email send <to> <subject>
+  if (args.startsWith("send ")) {
+    const parts = args.substring(5).trim().split(/\s+/);
+    if (parts.length < 2) {
+      await ctx.reply("Usage: /email send <email> <subject>\n\nReply to the next message with the body.");
+      return;
+    }
+
+    const to = parts[0];
+    const subject = parts.slice(1).join(" ");
+
+    await ctx.reply(
+      `📧 Send Email\n\n` +
+      `To: ${to}\n` +
+      `Subject: ${subject}\n\n` +
+      `Reply with the message body, or "cancel" to abort.`
+    );
+
+    // Store pending send in context (simplified - would need state management)
+    // For now, suggest using Claude to compose and send
+    await ctx.reply(
+      "💡 Tip: Just tell me to send an email in our chat, like:\n" +
+      `"Send an email to ${to} with subject '${subject}' saying: Hello!"`
+    );
+    return;
+  }
+
+  // /email accounts - list authorized accounts
+  if (args === "accounts") {
+    let text = `<b>📧 Authorized Google Accounts</b>\n\n`;
+    for (const acc of accounts) {
+      text += `✅ ${acc}\n`;
+    }
+    text += `\nPrimary: ${accounts[0]}`;
+    try {
+      await ctx.reply(text, { parse_mode: "HTML" });
+    } catch {
+      await ctx.reply(text.replace(/<[^>]*>/g, ""));
+    }
+    return;
+  }
+
+  // Unknown subcommand
+  await ctx.reply(
+    "📧 Email Commands:\n\n" +
+    "/email - Show inbox\n" +
+    "/email inbox - Show inbox\n" +
+    "/email read <id> - Read email\n" +
+    "/email search <query> - Search emails\n" +
+    "/email send <to> <subject> - Compose email\n" +
+    "/email accounts - List authorized accounts"
   );
 });
 
