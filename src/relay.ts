@@ -3882,6 +3882,16 @@ async function sendResponse(ctx: CustomContext, response: string): Promise<void>
 // ============================================================
 
 console.log("Starting Claude Telegram Relay...");
+
+// Verify Claude CLI is available and log version
+const versionCheck = Bun.spawnSync([CLAUDE_PATH, "--version"]);
+if (versionCheck.success) {
+  const version = new TextDecoder().decode(versionCheck.stdout).trim();
+  console.log(`Claude CLI: ${version}`);
+} else {
+  console.warn(`WARNING: Claude CLI not found at '${CLAUDE_PATH}' - relay will fail on message processing`);
+}
+
 console.log(`Authorized user: ${ALLOWED_USER_ID || "ANY (not recommended)"}`);
 console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
 console.log(`Supabase: ${supabase ? "connected" : "disabled"}`);

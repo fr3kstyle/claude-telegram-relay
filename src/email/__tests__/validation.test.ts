@@ -103,10 +103,6 @@ describe("validateEmail", () => {
       expect(validateEmail("user name@gmail.com")).toBe(false);
     });
 
-    test("rejects spaces", () => {
-      expect(validateEmail("user name@gmail.com")).toBe(false);
-    });
-
     // Note: RFC 5322 technically allows leading dots, but many providers reject them
     // The current regex accepts them, which is valid per RFC
     test("accepts leading dot in local part (RFC 5322 valid)", () => {
