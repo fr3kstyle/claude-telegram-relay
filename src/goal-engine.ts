@@ -138,6 +138,13 @@ export async function createSubGoal(
 ): Promise<string | null> {
   if (!supabase) return null;
 
+  // First verify parent goal exists to avoid FK constraint errors
+  const parent = await getGoal(parentGoalId);
+  if (!parent) {
+    // Parent was deleted - this is a normal race condition, skip silently
+    return null;
+  }
+
   const { data, error } = await supabase
     .from("memory")
     .insert({
@@ -152,7 +159,10 @@ export async function createSubGoal(
     .single();
 
   if (error) {
-    console.error("[GOAL-ENGINE] Error creating sub-goal:", error);
+    // Only log unexpected errors (not FK violations which are race conditions)
+    if (!error.message?.includes("foreign key")) {
+      console.error("[GOAL-ENGINE] Error creating sub-goal:", error);
+    }
     return null;
   }
 
@@ -167,6 +177,13 @@ export async function createAction(
 ): Promise<string | null> {
   if (!supabase) return null;
 
+  // First verify parent goal exists to avoid FK constraint errors
+  const parent = await getGoal(parentGoalId);
+  if (!parent) {
+    // Parent was deleted - this is a normal race condition, skip silently
+    return null;
+  }
+
   const { data, error } = await supabase
     .from("memory")
     .insert({
@@ -180,7 +197,10 @@ export async function createAction(
     .single();
 
   if (error) {
-    console.error("[GOAL-ENGINE] Error creating action:", error);
+    // Only log unexpected errors (not FK violations which are race conditions)
+    if (!error.message?.includes("foreign key")) {
+      console.error("[GOAL-ENGINE] Error creating action:", error);
+    }
     return null;
   }
 
