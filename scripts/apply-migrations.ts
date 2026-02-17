@@ -19,10 +19,21 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 const PENDING_MIGRATIONS = [
+  // Core v2 schema (already applied, checked for idempotency)
+  '20260216120000_fix_match_memory.sql',
+  '20260216140000_goal_hygiene_rpc.sql',
   '20260217000000_oauth_tokens_schema.sql',
   '20260217010000_notification_preferences.sql',
-  '20260216140000_goal_hygiene_rpc.sql',
   '20260217020000_email_stats_rpc.sql',
+  // RLS fixes
+  '20260217133000_rls_audit_fix.sql',
+  // Trading system tables (may need manual application)
+  '20260217170000_trading_market_data.sql',
+  '20260217180000_trading_signals.sql',
+  '20260217190000_trading_executions.sql',
+  '20260217200000_trading_risk.sql',
+  '20260217210000_trading_ml.sql',
+  '20260217220000_trading_system.sql',
 ];
 
 async function checkTableExists(tableName: string): Promise<boolean> {

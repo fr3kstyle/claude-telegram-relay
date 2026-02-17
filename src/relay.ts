@@ -35,7 +35,6 @@ import {
 import { getEmailProviderFactory, getAuthorizedProviders } from "./email/provider-factory.ts";
 import type { EmailProvider, EmailMessage, EmailProviderType } from "./email/types.ts";
 import { getAuthUrl as getGoogleAuthUrl, exchangeCodeForToken as exchangeGoogleCode } from "./google-oauth.ts";
-import { getAuthUrl as getMicrosoftAuthUrl, exchangeCodeForToken as exchangeMicrosoftCode } from "./microsoft-oauth.ts";
 import { startTokenRefreshScheduler, stopTokenRefreshScheduler } from "./auth/index.ts";
 import { getTokenManager, type OAuthToken } from "./auth/token-manager.ts";
 import { parseEmailAddArgs, parseEmailVerifyArgs, EMAIL_ADD_USAGE } from "./utils/command-parser.ts";
@@ -4040,37 +4039,90 @@ bot.command("trades", async (ctx) => {
   }
 });
 
-// /balance - Show account balance
+// /balance - Show account balance from Bybit
 bot.command("balance", async (ctx) => {
-  if (!supabase) {
-    await ctx.reply("⚠️ Database not configured");
+  const BYBIT_API_KEY = process.env.BYBIT_API_KEY || "";
+  const BYBIT_API_SECRET = process.env.BYBIT_API_SECRET || "";
+
+  if (!BYBIT_API_KEY || !BYBIT_API_SECRET) {
+    await ctx.reply("⚠️ Bybit API credentials not configured. Set BYBIT_API_KEY and BYBIT_API_SECRET in environment.");
     return;
   }
 
-  try {
-    const { data, error } = await supabase
-      .from("account_history")
-      .select("*")
-      .order("snapshot_at", { ascending: false })
-      .limit(1)
-      .single();
+  await ctx.reply("🔄 Fetching balance from Bybit...");
 
-    if (error || !data) {
-      // Fallback to current balance display
-      await ctx.reply("💰 Balance data not available. Use Bybit API for live balance.");
+  try {
+    const timestamp = Date.now();
+    const recvWindow = 5000;
+    const signString = timestamp + BYBIT_API_KEY + recvWindow + "accountType=UNIFIED";
+    const baseUrl = process.env.BYBIT_TESTNET === "true"
+      ? "https://api-testnet.bybit.com"
+      : "https://api.bybit.com";
+
+    // Generate signature
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(BYBIT_API_SECRET);
+    const msgData = encoder.encode(signString);
+
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const signature = await crypto.subtle.sign('HMAC', cryptoKey, msgData);
+    const signHex = Array.from(new Uint8Array(signature))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+
+    const response = await fetch(
+      `${baseUrl}/v5/account/wallet-balance?accountType=UNIFIED`,
+      {
+        headers: {
+          'X-BAPI-API-KEY': BYBIT_API_KEY,
+          'X-BAPI-TIMESTAMP': timestamp.toString(),
+          'X-BAPI-RECV-WINDOW': recvWindow.toString(),
+          'X-BAPI-SIGN': signHex,
+        },
+      }
+    );
+
+    const data = await response.json();
+
+    if (data.retCode !== 0) {
+      await ctx.reply(`❌ Bybit API error: ${data.retMsg}`);
       return;
     }
 
-    let text = "💰 <b>Account Balance</b>\n\n";
-    text += `💵 Total: <code>$${data.total_balance_usd?.toFixed(2) || "0.00"}</code>\n`;
-    text += `📊 Available: <code>$${data.available_balance_usd?.toFixed(2) || "0.00"}</code>\n`;
-    text += `📈 Equity: <code>$${data.equity_usd?.toFixed(2) || "0.00"}</code>\n`;
-    text += `📐 Unrealized PnL: <code>$${data.unrealized_pnl_usd?.toFixed(2) || "0.00"}</code>\n`;
-    text += `\n📊 Cumulative PnL: <code>$${data.cumulative_pnl?.toFixed(2) || "0.00"}</code>`;
+    const account = data.result?.list?.[0];
+    if (!account) {
+      await ctx.reply("❌ No account data found");
+      return;
+    }
+
+    let text = "💰 <b>Bybit Account Balance</b>\n\n";
+    text += `💵 Total Balance: <code>$${parseFloat(account.totalWalletBalance).toFixed(2)}</code>\n`;
+    text += `📊 Available: <code>$${parseFloat(account.totalAvailableBalance).toFixed(2)}</code>\n`;
+    text += `📈 Total Equity: <code>$${parseFloat(account.totalEquity).toFixed(2)}</code>\n`;
+    text += `📐 Unrealized PnL: <code>$${parseFloat(account.totalUnrealisedPnl).toFixed(2)}</code>\n\n`;
+
+    // Show coin breakdown
+    const coins = account.coin?.filter((c: any) => parseFloat(c.walletBalance) > 0) || [];
+    if (coins.length > 0) {
+      text += "<b>Coins:</b>\n";
+      for (const coin of coins.slice(0, 5)) {
+        const balance = parseFloat(coin.walletBalance).toFixed(4);
+        const usd = parseFloat(coin.usdValue).toFixed(2);
+        text += `  ${coin.coin}: ${balance} ($${usd})\n`;
+      }
+    }
 
     await ctx.reply(text, { parse_mode: "HTML" });
   } catch (error) {
-    await ctx.reply(`❌ Error: ${error}`);
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    await ctx.reply(`❌ Error fetching balance: ${errorMsg}`);
   }
 });
 

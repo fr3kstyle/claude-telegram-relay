@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     // ============================================================
-    // Core Services
+    // Core Services (always restart)
     // ============================================================
     {
       name: "claude-relay",
@@ -12,8 +12,10 @@ module.exports = {
         NODE_ENV: "production",
         PATH: "/home/radxa/.npm-global/bin:/home/radxa/.bun/bin:/usr/local/bin:/usr/bin:/bin",
       },
+      autorestart: true,
       restart_delay: 5000,
-      max_restarts: 10,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
     {
@@ -27,7 +29,8 @@ module.exports = {
       },
       autorestart: true,
       restart_delay: 10000,
-      max_restarts: 5,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
     {
@@ -40,7 +43,9 @@ module.exports = {
         PATH: "/home/radxa/.npm-global/bin:/home/radxa/.bun/bin:/usr/local/bin:/usr/bin:/bin",
       },
       cron_restart: "0 */2 * * *",
-      autorestart: false,
+      autorestart: true,
+      restart_delay: 60000,
+      max_restarts: 10,
       watch: false,
     },
     {
@@ -53,12 +58,14 @@ module.exports = {
         PATH: "/home/radxa/.npm-global/bin:/home/radxa/.bun/bin:/usr/local/bin:/usr/bin:/bin",
       },
       cron_restart: "30 * * * *",
-      autorestart: false,
+      autorestart: true,
+      restart_delay: 60000,
+      max_restarts: 10,
       watch: false,
     },
 
     // ============================================================
-    // BEHEMOTH Trading Services
+    // BEHEMOTH Trading Services (always restart)
     // ============================================================
 
     // Scanners (different tiers with different frequencies)
@@ -73,7 +80,8 @@ module.exports = {
       },
       autorestart: true,
       restart_delay: 10000,
-      max_restarts: 5,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
     {
@@ -87,7 +95,8 @@ module.exports = {
       },
       autorestart: true,
       restart_delay: 15000,
-      max_restarts: 5,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
     {
@@ -101,11 +110,12 @@ module.exports = {
       },
       autorestart: true,
       restart_delay: 30000,
-      max_restarts: 5,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
 
-    // Trading Engine
+    // Trading Engine (critical - always restart)
     {
       name: "trade-executor",
       script: "bun",
@@ -116,8 +126,9 @@ module.exports = {
         PATH: "/home/radxa/.npm-global/bin:/home/radxa/.bun/bin:/usr/local/bin:/usr/bin:/bin",
       },
       autorestart: true,
-      restart_delay: 10000,
-      max_restarts: 3,
+      restart_delay: 5000,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
     {
@@ -130,8 +141,9 @@ module.exports = {
         PATH: "/home/radxa/.npm-global/bin:/home/radxa/.bun/bin:/usr/local/bin:/usr/bin:/bin",
       },
       autorestart: true,
-      restart_delay: 10000,
-      max_restarts: 5,
+      restart_delay: 5000,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
     {
@@ -144,12 +156,13 @@ module.exports = {
         PATH: "/home/radxa/.npm-global/bin:/home/radxa/.bun/bin:/usr/local/bin:/usr/bin:/bin",
       },
       autorestart: true,
-      restart_delay: 10000,
-      max_restarts: 5,
+      restart_delay: 5000,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
 
-    // Learning Engine (runs hourly for pattern mining)
+    // Learning Engine (runs hourly)
     {
       name: "learning-engine",
       script: "bun",
@@ -160,11 +173,13 @@ module.exports = {
         PATH: "/home/radxa/.npm-global/bin:/home/radxa/.bun/bin:/usr/local/bin:/usr/bin:/bin",
       },
       cron_restart: "0 * * * *",
-      autorestart: false,
+      autorestart: true,
+      restart_delay: 60000,
+      max_restarts: 10,
       watch: false,
     },
 
-    // Telegram Alerter (listens for alerts via realtime)
+    // Telegram Alerter (critical for notifications)
     {
       name: "telegram-alerter",
       script: "bun",
@@ -175,8 +190,9 @@ module.exports = {
         PATH: "/home/radxa/.npm-global/bin:/home/radxa/.bun/bin:/usr/local/bin:/usr/bin:/bin",
       },
       autorestart: true,
-      restart_delay: 10000,
-      max_restarts: 5,
+      restart_delay: 5000,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
   ],

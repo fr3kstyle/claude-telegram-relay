@@ -566,9 +566,14 @@ async function main() {
   console.log('='.repeat(50));
 
   // Guard: Check credentials before attempting API calls
-  if (!BYBIT_API_KEY || !BYBIT_API_SECRET) {
-    console.log('[Executor] Bybit credentials not configured - idling');
+  // Check both truthiness AND minimum length (API keys are at least 10 chars)
+  const hasValidKey = BYBIT_API_KEY && BYBIT_API_KEY.length >= 10;
+  const hasValidSecret = BYBIT_API_SECRET && BYBIT_API_SECRET.length >= 10;
+
+  if (!hasValidKey || !hasValidSecret) {
+    console.log('[Executor] Bybit credentials not configured or invalid - idling');
     console.log('[Executor] Set BYBIT_API_KEY and BYBIT_API_SECRET to enable trading');
+    console.log(`[Executor] Key length: ${BYBIT_API_KEY?.length || 0}, Secret length: ${BYBIT_API_SECRET?.length || 0}`);
     // Stay alive but idle - PM2 manages lifecycle
     setInterval(() => {
       // Heartbeat every 5 minutes to show we're alive
