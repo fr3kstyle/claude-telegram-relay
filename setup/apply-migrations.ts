@@ -85,8 +85,8 @@ async function main() {
   console.log(`Found ${migrationFiles.length} migration files.\n`);
 
   // Pending migrations from HEARTBEAT.md
+  // Note: 20260216120000_fix_match_memory.sql was deployed 2026-02-17
   const pendingMigrations = [
-    '20260216120000_fix_match_memory.sql',
     '20260216140000_goal_hygiene_rpc.sql',
     '20260217020000_email_stats_rpc.sql'
   ];

@@ -52,9 +52,18 @@ Note: match_memory RPC confirmed working. Remaining 2 migrations can be applied 
 - Automated: `DATABASE_URL="..." bun run migrate` (get DATABASE_URL from Supabase Dashboard > Settings > Database > Connection string)
 
 ### Memory Constraints
-- System has 3.8GB RAM, ~1.9GB available
-- Agent-loop stable (43m+ uptime)
+- System has 3.8GB RAM, ~1.4GB available
+- Agent-loop stable (55m+ uptime)
 - Deep-think and goal-engine stopped to conserve memory
+
+### Trading Scanner Resource Analysis (2026-02-17 Cycle 70)
+| Scanner | Symbols | Interval | Est. Memory | Status |
+|---------|---------|----------|-------------|--------|
+| top10 | 2 (BTC, ETH) | 60s | ~50-80MB | Ready to enable |
+| top20 | 6 mid-cap | 120s | ~50-80MB | Skip on low-memory |
+| top50 | 50 dynamic | 600s | ~80-120MB | Skip on low-memory |
+
+**Recommendation:** Only enable `scanner-top10` on this 3.8GB system. Add top20 only after monitoring memory for 24h. Skip top50 entirely or run only during low-activity windows (2am-6am).
 
 ### Recent Completions
 - [x] RLS policies added to trading and self-improvement tables (2026-02-17)
