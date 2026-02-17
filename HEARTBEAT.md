@@ -80,10 +80,11 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 - [x] Graceful degradation action completed (SupabaseResilience layer integrated)
 - [x] Trading scanner resource review completed (scanners running within budget)
 - [x] OAuth scopes and consent flow documentation completed (Cycle 79)
+- [x] OpenAI Whisper fallback for transcription (Cycle 80) - automatic failover when Groq fails
 
 ### Weekly Reminders
 - [ ] **Monday:** Review @BotNews Telegram channel for Telegram Bot API updates
 - [ ] **Quarterly:** Review OAuth provider changelogs (Google Workspace, Microsoft 365 dev blogs)
 
 ### Enhancement Backlog
-- [ ] OpenAI Whisper fallback for transcription (OPENAI_API_KEY available, add to transcribeAudio function)
+- [ ] Subscribe to Google Workspace and Microsoft 365 developer blogs for OAuth changelog monitoring
