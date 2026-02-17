@@ -85,7 +85,7 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 
 ### Weekly Reminders
 - [ ] **Monday:** Review @BotNews Telegram channel for Telegram Bot API updates
-- [ ] **Weekly:** Run `bun run scripts/check-oauth-feeds.ts` to check OAuth provider changelogs (or add as cron job)
+- [x] **Weekly:** OAuth Feed Monitor cron job (runs every Monday 9am via scripts/check-oauth-feeds.ts)
 
 ### Enhancement Backlog
 - [x] OAuth provider changelog monitoring (scripts/check-oauth-feeds.ts created Cycle 81)
