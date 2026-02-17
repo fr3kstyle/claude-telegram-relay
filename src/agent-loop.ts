@@ -47,11 +47,11 @@ function killActiveChildren() {
 /**
  * Kill orphaned claude processes from previous agent-loop instances.
  * When PM2 restarts agent-loop, the old process may die before its
- * child claude processes, leaving them orphaned (reparented to PID 1).
+ * child claude processes, leaving them orphaned (reparented to PID 1 or systemd --user).
  */
 function killOrphanedClaudeProcesses() {
   try {
-    // Find claude processes that are orphaned (ppid = 1) or whose parent is dead
+    // Find claude processes that are orphaned (ppid = 1 or systemd --user) or whose parent is dead
     const result = Bun.spawnSync(["bash", "-c",
       `ps -eo pid,ppid,command | grep 'claude' | grep -v 'agent-loop' | grep -v grep`
     ]);
@@ -71,8 +71,12 @@ function killOrphanedClaudeProcesses() {
         // Skip our own processes
         if (pid === currentPid) continue;
 
-        // Kill if orphaned (ppid=1) or if it's a claude CLI process not from us
-        if (ppid === 1 || cmd.includes('/.npm-global/bin/claude') || cmd.includes('/.bun/bin/claude')) {
+        // Check if orphaned: ppid=1 (traditional), systemd --user (modern), or known CLI paths
+        const isTraditionalOrphan = ppid === 1;
+        const isSystemdUserOrphan = isSystemdUserSession(ppid);
+        const isKnownCliPath = cmd.includes('/.npm-global/bin/claude') || cmd.includes('/.bun/bin/claude');
+
+        if (isTraditionalOrphan || isSystemdUserOrphan || isKnownCliPath) {
           try {
             process.kill(pid, "SIGTERM");
             console.log(`[AGENT] Killed orphaned claude process ${pid}: ${cmd.substring(0, 60)}`);
