@@ -51,6 +51,41 @@ interface TokenData {
   token_type: string;
   expiry_date: number;
   email: string;
+  scope_warnings?: string[]; // Scopes that were requested but not granted
+}
+
+// Critical scopes that must be present for full functionality
+const REQUIRED_SCOPES = [
+  "gmail.readonly",
+  "gmail.send",
+];
+
+/**
+ * Validate that granted scopes match requested scopes.
+ * Returns warnings for any missing scopes.
+ */
+function validateScopes(grantedScopeString: string): { warnings: string[]; missing: string[] } {
+  const grantedScopes = new Set(
+    grantedScopeString.toLowerCase().split(" ").map(s => s.trim()).filter(Boolean)
+  );
+
+  const warnings: string[] = [];
+  const missing: string[] = [];
+
+  // Check all requested scopes
+  for (const scope of SCOPES) {
+    const normalizedScope = scope.toLowerCase();
+    if (!grantedScopes.has(normalizedScope)) {
+      warnings.push(scope);
+      // Check if it's a required scope
+      const scopeName = scope.split("/").pop() || scope;
+      if (REQUIRED_SCOPES.some(req => scopeName.includes(req))) {
+        missing.push(scope);
+      }
+    }
+  }
+
+  return { warnings, missing };
 }
 
 /**
@@ -148,6 +183,16 @@ export async function exchangeCodeForToken(
 
   const data = await response.json();
 
+  // Validate scopes - warn if some were not granted
+  const { warnings, missing } = validateScopes(data.scope || "");
+  if (warnings.length > 0) {
+    console.log(`\n[Google OAuth] Scope warnings for ${email}:`);
+    warnings.forEach(s => console.log(`  - Missing: ${s}`));
+    if (missing.length > 0) {
+      console.log(`  WARNING: Some required scopes are missing. Full functionality may be limited.`);
+    }
+  }
+
   return {
     access_token: data.access_token,
     refresh_token: data.refresh_token,
@@ -155,6 +200,7 @@ export async function exchangeCodeForToken(
     token_type: data.token_type,
     expiry_date: Date.now() + data.expires_in * 1000,
     email,
+    scope_warnings: warnings.length > 0 ? warnings : undefined,
   };
 }
 

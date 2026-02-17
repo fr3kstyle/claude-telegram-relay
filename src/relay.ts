@@ -127,14 +127,27 @@ const elevenLabsCircuitBreaker = circuitBreakers.get("elevenlabs-tts", {
 });
 
 // Kill orphaned child processes left behind after Claude CLI timeout.
-// Finds processes whose parent was the killed Claude process (now reparented to PID 1)
+// Check if a PID is a systemd user session (indicates orphan reparenting on modern Linux).
+function isSystemdUserSession(pid: number): boolean {
+  try {
+    const result = Bun.spawnSync(["bash", "-c",
+      `ps -o command -p ${pid} 2>/dev/null | grep -q 'systemd.*--user' && echo yes || echo no`
+    ]);
+    const output = new TextDecoder().decode(result.stdout).trim();
+    return output === "yes";
+  } catch {
+    return false;
+  }
+}
+
+// Finds processes whose parent was the killed Claude process (now reparented to PID 1 or systemd)
 // and matches common patterns from skills/tools that Claude spawns.
 async function killOrphanedProcesses(claudePid: number): Promise<void> {
   try {
     // Find child processes that were spawned by the Claude process.
-    // After killing Claude, children get reparented to PID 1 (launchd on macOS).
+    // After killing Claude, children get reparented to PID 1 (launchd/init) or systemd --user.
     // We look for python/node/bun processes started from .claude/skills or similar paths
-    // that are now orphaned (PPID=1) and started around the same time.
+    // that are now orphaned (PPID=1 or systemd --user).
     const result = Bun.spawnSync(["bash", "-c",
       `ps -eo pid,ppid,lstart,command | grep -E '(scripts/(sheets|gcal|gmail|auth|gdrive|gchat|gslides|gdocs)\\.py|.claude/skills/)' | grep -v grep`
     ]);
@@ -143,10 +156,16 @@ async function killOrphanedProcesses(claudePid: number): Promise<void> {
 
     const pidsToKill: number[] = [];
     for (const line of output.split("\n")) {
-      const match = line.trim().match(/^(\d+)/);
+      const match = line.trim().match(/^(\d+)\s+(\d+)/);
       if (match) {
         const pid = parseInt(match[1]);
-        if (pid !== process.pid) pidsToKill.push(pid);
+        const ppid = parseInt(match[2]);
+        if (pid === process.pid) continue;
+
+        // Kill if orphaned: ppid=1 (traditional) or systemd --user (modern Linux)
+        if (ppid === 1 || isSystemdUserSession(ppid)) {
+          pidsToKill.push(pid);
+        }
       }
     }
 
