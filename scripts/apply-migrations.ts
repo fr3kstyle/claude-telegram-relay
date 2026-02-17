@@ -21,6 +21,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const PENDING_MIGRATIONS = [
   '20260217000000_oauth_tokens_schema.sql',
   '20260217010000_notification_preferences.sql',
+  '20260216140000_goal_hygiene_rpc.sql',
+  '20260217020000_email_stats_rpc.sql',
 ];
 
 async function checkTableExists(tableName: string): Promise<boolean> {
@@ -30,6 +32,21 @@ async function checkTableExists(tableName: string): Promise<boolean> {
       .select('id')
       .limit(1);
     return !error;
+  } catch {
+    return false;
+  }
+}
+
+async function checkFunctionExists(functionName: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc(functionName, {});
+    // If we get a function not found error, it doesn't exist
+    // Some functions might need params, so we check the error message
+    if (error && error.message?.includes('function') && error.message?.includes('does not exist')) {
+      return false;
+    }
+    // Function exists (may have returned data or a different error)
+    return true;
   } catch {
     return false;
   }
@@ -57,6 +74,17 @@ async function applyMigration(filename: string): Promise<boolean> {
     const exists = await checkTableExists(tableName);
     if (exists) {
       console.log(`  ✓ Table ${tableName} already exists, skipping`);
+      return true;
+    }
+  }
+
+  // Check for functions this migration creates
+  const functionMatches = content.matchAll(/CREATE(?: OR REPLACE)? FUNCTION (\w+)/g);
+  for (const match of functionMatches) {
+    const functionName = match[1];
+    const exists = await checkFunctionExists(functionName);
+    if (exists) {
+      console.log(`  ✓ Function ${functionName} already exists, skipping`);
       return true;
     }
   }

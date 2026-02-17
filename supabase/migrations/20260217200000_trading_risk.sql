@@ -231,8 +231,8 @@ BEGIN
       'Daily Loss Warning',
       'Daily loss at ' || daily_pnl_percent || '%',
       TRUE
-    FROM risk_metrics WHERE trading_date = CURRENT_DATE
-    WHERE ABS(daily_pnl_percent) >= 10;
+    FROM risk_metrics
+    WHERE trading_date = CURRENT_DATE AND ABS(daily_pnl_percent) >= 10;
   END IF;
 END;
 $$ LANGUAGE plpgsql;

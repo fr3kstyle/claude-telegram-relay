@@ -39,17 +39,15 @@ Stay silent (HEARTBEAT_OK) when:
 ### Active Goals
 - [P0] Complete OAuth integration hardening (deadline 3/31)
 - [P3] Outlook OAuth: Code complete - needs microsoft-credentials.json from Azure Portal (see docs/azure-credentials-setup.md)
-- [P4] Apply email stats RPC migration via Supabase Dashboard (deadline 2/24)
+- [x] Apply email stats RPC migration via Supabase Dashboard (completed 2026-02-17)
 
 ### Pending Supabase Migrations
 Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/project/nlkgqooefwbupwubloae/sql/new):
 - [x] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC to query correct table (**VERIFIED DEPLOYED** 2026-02-17)
-- [ ] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPC functions
-- [ ] `20260217020000_email_stats_rpc.sql` - Email stats aggregation RPCs
+- [x] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPC functions (**VERIFIED DEPLOYED** 2026-02-17)
+- [x] `20260217020000_email_stats_rpc.sql` - Email stats aggregation RPCs (**VERIFIED DEPLOYED** 2026-02-17)
 
-Note: match_memory RPC confirmed working. Remaining 2 migrations can be applied via:
-- Manual: Supabase Dashboard SQL Editor
-- Automated: `DATABASE_URL="..." bun run migrate` (get DATABASE_URL from Supabase Dashboard > Settings > Database > Connection string)
+Note: All migrations verified via `bun run scripts/apply-migrations.ts`
 
 ### Memory Constraints
 - System has 3.8GB RAM, ~1.4GB available
