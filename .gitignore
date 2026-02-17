@@ -44,3 +44,4 @@ microsoft-credentials.json
 check-order.ts
 trailing-stop.ts
 test-trade.ts
+trading-status.ts
