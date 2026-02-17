@@ -18,9 +18,9 @@ class Top50Scanner extends BaseScanner {
   constructor() {
     super({
       tier: 'top50',
-      symbols: [], // Populated dynamically
-      intervalSeconds: 600,
-      confidenceThreshold: 82,
+      symbols: ['MOODENGUSDT', 'FIGHTUSDT', 'DEEPUSDT', 'MAGICUSDT', 'TRIAUSDT', 'CLOUSDT', 'MERLUSDT', 'ESPUSDT', 'TNSRUSDT', 'UMAUSDT'],
+      intervalSeconds: 300,
+      confidenceThreshold: 75,
     });
   }
 

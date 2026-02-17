@@ -16,9 +16,9 @@ class Top10Scanner extends BaseScanner {
   constructor() {
     super({
       tier: 'top10',
-      symbols: ['BTCUSDT', 'ETHUSDT'],
+      symbols: ['RPLUSDT', 'INITUSDT', 'POWERUSDT', 'SPACEUSDT', 'ARIAUSDT'],
       intervalSeconds: 60,
-      confidenceThreshold: 78,
+      confidenceThreshold: 75,
     });
   }
 

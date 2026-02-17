@@ -16,9 +16,9 @@ class Top20Scanner extends BaseScanner {
   constructor() {
     super({
       tier: 'top20',
-      symbols: ['SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'BNBUSDT', 'ADAUSDT', 'AVAXUSDT'],
+      symbols: ['ORCAUSDT', 'IRYSUSDT', 'USELESSUSDT', 'OGNUSDT', 'FHEUSDT', 'JELLYJELLYUSDT', 'XNYUSDT'],
       intervalSeconds: 120,
-      confidenceThreshold: 80,
+      confidenceThreshold: 75,
     });
   }
 
