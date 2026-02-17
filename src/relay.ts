@@ -3996,6 +3996,232 @@ bot.command("stop", async (ctx) => {
 });
 
 // ============================================================
+// TRADING COMMANDS (BEHEMOTH Integration)
+// ============================================================
+
+// /trades - Show recent trades
+bot.command("trades", async (ctx) => {
+  if (!supabase) {
+    await ctx.reply("⚠️ Database not configured");
+    return;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("trade_executions")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    if (error) throw error;
+
+    if (!data || data.length === 0) {
+      await ctx.reply("📊 No recent trades");
+      return;
+    }
+
+    let text = "📊 <b>Recent Trades</b>\n\n";
+    for (const trade of data) {
+      const emoji = trade.realized_pnl > 0 ? "✅" : trade.realized_pnl < 0 ? "❌" : "⏳";
+      const status = trade.status === "open" ? "🟢" : "";
+      text += `${emoji} ${status} <b>${trade.symbol}</b> ${trade.position_side}\n`;
+      text += `   Entry: $${trade.entry_price?.toFixed(2)}`;
+      if (trade.exit_price) text += ` → Exit: $${trade.exit_price.toFixed(2)}`;
+      if (trade.realized_pnl_percent) {
+        const sign = trade.realized_pnl_percent >= 0 ? "+" : "";
+        text += ` | ${sign}${trade.realized_pnl_percent.toFixed(2)}%`;
+      }
+      text += "\n";
+    }
+
+    await ctx.reply(text, { parse_mode: "HTML" });
+  } catch (error) {
+    await ctx.reply(`❌ Error: ${error}`);
+  }
+});
+
+// /balance - Show account balance
+bot.command("balance", async (ctx) => {
+  if (!supabase) {
+    await ctx.reply("⚠️ Database not configured");
+    return;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("account_history")
+      .select("*")
+      .order("snapshot_at", { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error || !data) {
+      // Fallback to current balance display
+      await ctx.reply("💰 Balance data not available. Use Bybit API for live balance.");
+      return;
+    }
+
+    let text = "💰 <b>Account Balance</b>\n\n";
+    text += `💵 Total: <code>$${data.total_balance_usd?.toFixed(2) || "0.00"}</code>\n`;
+    text += `📊 Available: <code>$${data.available_balance_usd?.toFixed(2) || "0.00"}</code>\n`;
+    text += `📈 Equity: <code>$${data.equity_usd?.toFixed(2) || "0.00"}</code>\n`;
+    text += `📐 Unrealized PnL: <code>$${data.unrealized_pnl_usd?.toFixed(2) || "0.00"}</code>\n`;
+    text += `\n📊 Cumulative PnL: <code>$${data.cumulative_pnl?.toFixed(2) || "0.00"}</code>`;
+
+    await ctx.reply(text, { parse_mode: "HTML" });
+  } catch (error) {
+    await ctx.reply(`❌ Error: ${error}`);
+  }
+});
+
+// /signals - Show active signals
+bot.command("signals", async (ctx) => {
+  if (!supabase) {
+    await ctx.reply("⚠️ Database not configured");
+    return;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("active_signals_view")
+      .select("*")
+      .limit(5);
+
+    if (error) throw error;
+
+    if (!data || data.length === 0) {
+      await ctx.reply("📡 No active signals");
+      return;
+    }
+
+    let text = "📡 <b>Active Signals</b>\n\n";
+    for (const signal of data) {
+      const emoji = signal.signal_type === "long" ? "🟢" : "🔴";
+      text += `${emoji} <b>${signal.symbol}</b> ${signal.signal_type.toUpperCase()}\n`;
+      text += `   Entry: $${signal.entry_price?.toFixed(2)}\n`;
+      text += `   Confidence: ${signal.confidence?.toFixed(1)}%\n`;
+      const ttl = Math.max(0, Math.floor((signal.ttl_seconds || 0)));
+      text += `   TTL: ${ttl}s\n\n`;
+    }
+
+    await ctx.reply(text, { parse_mode: "HTML" });
+  } catch (error) {
+    await ctx.reply(`❌ Error: ${error}`);
+  }
+});
+
+// /risk - Show risk dashboard
+bot.command("risk", async (ctx) => {
+  if (!supabase) {
+    await ctx.reply("⚠️ Database not configured");
+    return;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("risk_dashboard_view")
+      .select("*")
+      .limit(1)
+      .single();
+
+    if (error || !data) {
+      await ctx.reply("🛡️ Risk data not available");
+      return;
+    }
+
+    let text = "🛡️ <b>Risk Dashboard</b>\n\n";
+    text += `📊 Daily P&L: <code>${data.daily_pnl_percent?.toFixed(2) || "0.00"}%</code>\n`;
+    text += `📉 Drawdown: <code>${data.current_drawdown?.toFixed(2) || "0.00"}%</code>\n`;
+    text += `📐 Open Positions: <code>${data.open_positions || 0}</code>\n`;
+    text += `💰 Balance: <code>$${data.total_balance_usd?.toFixed(2) || "0.00"}</code>\n`;
+    text += `📈 Equity: <code>$${data.equity_usd?.toFixed(2) || "0.00"}</code>\n`;
+    text += `🎯 Win Rate: <code>${data.daily_win_rate?.toFixed(1) || "0.0"}%</code>\n\n`;
+
+    if (data.emergency_stop_triggered) {
+      text += "🚨 <b>EMERGENCY STOP ACTIVE</b>";
+    } else if (data.trading_enabled) {
+      text += "✅ Trading Enabled";
+    } else {
+      text += "⏸️ Trading Paused";
+    }
+
+    await ctx.reply(text, { parse_mode: "HTML" });
+  } catch (error) {
+    await ctx.reply(`❌ Error: ${error}`);
+  }
+});
+
+// /performance - Show trading performance
+bot.command("performance", async (ctx) => {
+  if (!supabase) {
+    await ctx.reply("⚠️ Database not configured");
+    return;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("strategy_performance")
+      .select("*")
+      .eq("period_type", "all_time")
+      .order("total_trades", { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error || !data) {
+      await ctx.reply("📈 No performance data available yet");
+      return;
+    }
+
+    let text = "📈 <b>All-Time Performance</b>\n\n";
+    text += `📊 Total Trades: <code>${data.total_trades || 0}</code>\n`;
+    text += `✅ Wins: <code>${data.winning_trades || 0}</code>\n`;
+    text += `❌ Losses: <code>${data.losing_trades || 0}</code>\n`;
+    text += `🎯 Win Rate: <code>${data.win_rate?.toFixed(1) || "0.0"}%</code>\n`;
+    text += `💰 Total P&L: <code>$${data.total_pnl?.toFixed(2) || "0.00"}</code>\n`;
+    text += `📉 Max Drawdown: <code>${data.max_drawdown?.toFixed(2) || "0.00"}%</code>\n`;
+    if (data.sharpe_ratio) {
+      text += `⚡ Sharpe: <code>${data.sharpe_ratio.toFixed(2)}</code>`;
+    }
+
+    await ctx.reply(text, { parse_mode: "HTML" });
+  } catch (error) {
+    await ctx.reply(`❌ Error: ${error}`);
+  }
+});
+
+// /starttrading - Resume trading after stop
+bot.command("starttrading", async (ctx) => {
+  if (!supabase) {
+    await ctx.reply("⚠️ Database not configured");
+    return;
+  }
+
+  try {
+    await supabase.rpc("clear_emergency_stop");
+    await ctx.reply("✅ Trading resumed. Emergency stop cleared.");
+    await logEventV2("trading_resumed", "Trading resumed via /starttrading command", {}, ctx.threadInfo?.dbId);
+  } catch (error) {
+    await ctx.reply(`❌ Error: ${error}`);
+  }
+});
+
+// /stoptrading - Emergency stop trading only
+bot.command("stoptrading", async (ctx) => {
+  if (!supabase) {
+    await ctx.reply("⚠️ Database not configured");
+    return;
+  }
+
+  try {
+    await supabase.rpc("trigger_emergency_stop", { p_reason: "Manual trigger via Telegram" });
+    await ctx.reply("🛑 Trading stopped. All positions will be closed. Trading halted for 24 hours.");
+    await logEventV2("trading_stopped", "Trading stopped via /stoptrading command", {}, ctx.threadInfo?.dbId);
+  } catch (error) {
+    await ctx.reply(`❌ Error: ${error}`);
+  }
+});
+
+// ============================================================
 // MESSAGE HANDLERS
 // ============================================================
 
