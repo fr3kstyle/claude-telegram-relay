@@ -2424,6 +2424,89 @@ async function textToSpeech(text: string): Promise<Buffer | null> {
 }
 
 // ============================================================
+// ZOMBIE PROCESS CLEANUP (from previous PM2 instances)
+// ============================================================
+
+function isSystemdUserSession(pid: number): boolean {
+  try {
+    const result = Bun.spawnSync(["bash", "-c",
+      `ps -o command -p ${pid} 2>/dev/null | grep -q 'systemd.*--user' && echo yes || echo no`
+    ]);
+    const output = new TextDecoder().decode(result.stdout).trim();
+    return output === "yes";
+  } catch {
+    return false;
+  }
+}
+
+function killZombieBunProcesses(): number {
+  try {
+    const result = Bun.spawnSync(["bash", "-c",
+      `ps -eo pid,ppid,command | grep -E 'bun.*run.*relay' | grep -v grep`
+    ]);
+    const output = new TextDecoder().decode(result.stdout).trim();
+    if (!output) return 0;
+
+    const currentPid = process.pid;
+
+    // Find PM2 god daemon PID to identify legitimate PM2 children
+    let pm2GodPid: number | null = null;
+    try {
+      const pm2Result = Bun.spawnSync(["bash", "-c",
+        `ps -eo pid,command | grep 'PM2.*God Daemon' | grep -v grep | head -1`
+      ]);
+      const pm2Output = new TextDecoder().decode(pm2Result.stdout).trim();
+      const pm2Match = pm2Output.match(/^(\d+)/);
+      if (pm2Match) {
+        pm2GodPid = parseInt(pm2Match[1]);
+      }
+    } catch {
+      // PM2 may not be running
+    }
+
+    let killed = 0;
+
+    for (const line of output.split("\n")) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      if (match) {
+        const pid = parseInt(match[1]);
+        const ppid = parseInt(match[2]);
+        const cmd = match[3];
+
+        // Skip our own process
+        if (pid === currentPid) continue;
+
+        // Check if this is a zombie/orphan:
+        // 1. ppid=1 (traditional init adoption)
+        // 2. Parent is systemd --user (modern session adoption)
+        // 3. NOT a child of PM2 god daemon
+        const isTraditionalOrphan = ppid === 1;
+        const isSystemdUserOrphan = isSystemdUserSession(ppid);
+        const isPm2Child = pm2GodPid !== null && ppid === pm2GodPid;
+
+        if ((isTraditionalOrphan || isSystemdUserOrphan) && !isPm2Child) {
+          try {
+            process.kill(pid, "SIGTERM");
+            console.log(`[RELAY] Killed zombie bun process ${pid}: ${cmd.substring(0, 60)}`);
+            killed++;
+          } catch {
+            // Process already exited
+          }
+        }
+      }
+    }
+
+    if (killed > 0) {
+      console.log(`[RELAY] Cleaned up ${killed} zombie bun process(es) on startup`);
+    }
+    return killed;
+  } catch {
+    // Best-effort cleanup
+    return 0;
+  }
+}
+
+// ============================================================
 // LOCK FILE (prevent multiple instances)
 // ============================================================
 
@@ -2526,6 +2609,9 @@ await mkdir(UPLOADS_DIR, { recursive: true });
 // Build skill registry once at startup
 skillRegistry = await buildSkillRegistry();
 console.log(`Skill registry: ${skillRegistry ? skillRegistry.split("\n").length - 1 + " skills loaded" : "none found"}`);
+
+// Kill any zombie relay processes from previous PM2 instances before acquiring lock
+killZombieBunProcesses();
 
 if (!(await acquireLock())) {
   console.error("Could not acquire lock. Another instance may be running.");
