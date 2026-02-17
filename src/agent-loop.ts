@@ -724,6 +724,10 @@ async function runAgentCycle(): Promise<void> {
   console.log(`[AGENT] Starting cycle at ${new Date().toISOString()}`);
   console.log("=".repeat(50));
 
+  // Periodic cleanup: catch orphans created mid-cycle
+  killZombieBunProcesses();
+  killOrphanedClaudeProcesses();
+
   const state = await loadState();
   state.runCount++;
   state.lastRun = new Date().toISOString();
