@@ -1519,6 +1519,51 @@ async function runGoalHygiene(daysThreshold: number): Promise<{
       }
     }
 
+    // Also clean the 'memory' table (used by agent-loop)
+    // Find orphan actions older than threshold in memory table
+    const { data: memoryOrphans, error: memoryOrphanError } = await supabase
+      .from("memory")
+      .select("id, content, priority, created_at")
+      .eq("type", "action")
+      .eq("status", "pending")
+      .is("parent_id", null)
+      .lt("created_at", cutoffDate.toISOString());
+
+    let memoryOrphansArchived = 0;
+    if (!memoryOrphanError && memoryOrphans && memoryOrphans.length > 0) {
+      const orphanIds = memoryOrphans.map((a) => a.id);
+      const { error: archiveError } = await supabase
+        .from("memory")
+        .update({ status: "archived" })
+        .in("id", orphanIds);
+
+      if (archiveError) {
+        console.log("Goal hygiene: failed to archive memory table orphan actions:", archiveError.message);
+      } else {
+        memoryOrphansArchived = orphanIds.length;
+        console.log(`Goal hygiene: archived ${memoryOrphansArchived} memory table orphan action(s)`);
+      }
+    }
+
+    // Find and delete malformed entries in memory table
+    const { data: memoryMalformed, error: memoryMalformedError } = await supabase
+      .from("memory")
+      .select("id, content, type")
+      .or("content.is.null,content.eq.");
+
+    let memoryMalformedDeleted = 0;
+    if (!memoryMalformedError && memoryMalformed && memoryMalformed.length > 0) {
+      const malformedIds = memoryMalformed.map((m) => m.id);
+      const { error: deleteError } = await supabase.from("memory").delete().in("id", malformedIds);
+
+      if (deleteError) {
+        console.log("Goal hygiene: failed to delete memory table malformed entries:", deleteError.message);
+      } else {
+        memoryMalformedDeleted = malformedIds.length;
+        console.log(`Goal hygiene: deleted ${memoryMalformedDeleted} memory table malformed entr(y/ies)`);
+      }
+    }
+
     // Build hygiene report for logging
     const { count: totalGoals } = await supabase
       .from("global_memory")
@@ -1532,17 +1577,41 @@ async function runGoalHygiene(daysThreshold: number): Promise<{
       .eq("type", "action")
       .eq("status", "pending");
 
+    const { count: memoryGoals } = await supabase
+      .from("memory")
+      .select("*", { count: "exact", head: true })
+      .eq("type", "goal")
+      .eq("status", "active");
+
+    const { count: memoryActions } = await supabase
+      .from("memory")
+      .select("*", { count: "exact", head: true })
+      .eq("type", "action")
+      .eq("status", "pending");
+
     const report = {
       summary: {
-        total_active_goals: totalGoals || 0,
-        total_pending_actions: totalActions || 0,
+        global_memory: {
+          total_active_goals: totalGoals || 0,
+          total_pending_actions: totalActions || 0,
+        },
+        memory: {
+          total_active_goals: memoryGoals || 0,
+          total_pending_actions: memoryActions || 0,
+        },
       },
       orphan_actions: orphanActions || [],
+      memory_orphan_actions: memoryOrphans || [],
       malformed: malformed || [],
+      memory_malformed: memoryMalformed || [],
       fallback_mode: true,
     };
 
-    return { orphansArchived, malformedDeleted, hygieneReport: report };
+    return {
+      orphansArchived: orphansArchived + memoryOrphansArchived,
+      malformedDeleted: malformedDeleted + memoryMalformedDeleted,
+      hygieneReport: report
+    };
   } catch (error) {
     console.error("Goal hygiene error:", error);
     return { orphansArchived: 0, malformedDeleted: 0, hygieneReport: null };
