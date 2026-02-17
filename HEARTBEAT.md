@@ -34,7 +34,7 @@ Stay silent (HEARTBEAT_OK) when:
 - Outside active hours (11pm-8am)
 - No pending items requiring attention
 
-## Current Status (Updated 2026-02-17 16:22 - Cycle 86)
+## Current Status (Updated 2026-02-17 16:25 - Cycle 87)
 
 ### Active Goals
 - [P0] Complete OAuth integration hardening (deadline 3/31)
@@ -45,7 +45,8 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 
 **Completed:**
 - [x] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC (**DEPLOYED** 2026-02-17)
-- [x] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPCs (**DEPLOYED** 2026-02-17)
+- [x] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPCs (**DEPLOYED** 2026-02-17, **schema cache needs refresh**)
+  - Fix: Dashboard → Settings → API → "Reload Schema Cache" button
 
 **Ready to Apply (Manual):**
 - [ ] `20260217020000_email_stats_rpc.sql` - Email stats RPCs (dependencies confirmed: email_accounts=3, email_messages=87)
@@ -76,6 +77,7 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 | **Total PM2** | **681MB** | All 12 services online |
 
 ### Recent Completions
+- [x] Security: Added trading-status.ts to .gitignore (contained embedded credentials - never committed)
 - [x] PM2 daemon mode for goal-engine, deep-think, pattern-miner (prevents restart loops)
 - [x] Graceful degradation action completed (SupabaseResilience layer integrated)
 - [x] Trading scanner resource review completed (scanners running within budget)
