@@ -78,6 +78,8 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 
 ### Recent Completions
 - [x] Security: Added trading-status.ts to .gitignore (contained embedded credentials - never committed)
+- [x] Security (Cycle 88): Found and deleted add-pairs.ts with embedded Bybit credentials - expanded .gitignore patterns
+- [x] Scanner config update (Cycle 88): Committed base-scanner.ts changes with volatile pairs and 75% thresholds
 - [x] PM2 daemon mode for goal-engine, deep-think, pattern-miner (prevents restart loops)
 - [x] Graceful degradation action completed (SupabaseResilience layer integrated)
 - [x] Trading scanner resource review completed (scanners running within budget)
