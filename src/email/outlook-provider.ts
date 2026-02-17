@@ -7,6 +7,7 @@
 
 import { getTokenManager } from '../auth/token-manager.ts';
 import { circuitBreakers } from '../utils/circuit-breaker.ts';
+import { getRateLimitTracker } from '../utils/rate-limit-tracker.ts';
 import type {
   EmailProvider,
   EmailMessage,
@@ -30,6 +31,14 @@ const outlookCircuitBreaker = circuitBreakers.get('outlook-api', {
   resetTimeout: 60000,
   onOpen: (name, failures) => console.log(`[CircuitBreaker:${name}] OPEN after ${failures} failures - Outlook API unavailable`),
   onClose: (name) => console.log(`[CircuitBreaker:${name}] CLOSED - Outlook API recovered`),
+});
+
+// Rate limit tracker for Microsoft Graph API (uses preset with alternate headers)
+const outlookRateLimitTracker = getRateLimitTracker('outlook-graph', {
+  onWarning: (name, remaining, limit) =>
+    console.warn(`[RateLimit:${name}] WARNING: ${remaining}/${limit} requests remaining`),
+  onCritical: (name, remaining, limit) =>
+    console.error(`[RateLimit:${name}] CRITICAL: Only ${remaining}/${limit} requests remaining!`),
 });
 
 // Microsoft Graph API types
@@ -225,12 +234,8 @@ export class OutlookProvider implements EmailProvider {
         headers: { ...headers, ...options?.headers },
       });
 
-      // Log rate limit headers for observability (Microsoft uses different header names)
-      const rateLimit = response.headers.get('x-ratelimit-limit') || response.headers.get('ratecontrol-limit');
-      const rateRemaining = response.headers.get('x-ratelimit-remaining') || response.headers.get('ratecontrol-remaining');
-      if (rateLimit || rateRemaining) {
-        console.log(`[Graph API] Rate limit: ${rateRemaining}/${rateLimit} remaining`);
-      }
+      // Track rate limits from response headers (Microsoft uses different header names)
+      outlookRateLimitTracker.updateFromHeaders(response.headers);
 
       if (!response.ok) {
         const error = await response.text();
