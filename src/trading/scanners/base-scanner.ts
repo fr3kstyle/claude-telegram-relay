@@ -432,21 +432,21 @@ export async function getScannerConfig(tier: ScannerTier): Promise<ScannerConfig
   const defaults: Record<ScannerTier, ScannerConfig> = {
     top10: {
       tier: 'top10',
-      symbols: ['BTCUSDT', 'ETHUSDT'],
+      symbols: ['RPLUSDT', 'INITUSDT', 'POWERUSDT', 'SPACEUSDT', 'ARIAUSDT'],
       intervalSeconds: 60,
-      confidenceThreshold: 78,
+      confidenceThreshold: 75, // Lowered from 78
     },
     top20: {
       tier: 'top20',
-      symbols: ['SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'BNBUSDT'],
+      symbols: ['ORCAUSDT', 'IRYSUSDT', 'USELESSUSDT', 'OGNUSDT', 'FHEUSDT', 'JELLYJELLYUSDT', 'XNYUSDT'],
       intervalSeconds: 120,
-      confidenceThreshold: 80,
+      confidenceThreshold: 75, // Lowered from 80
     },
     top50: {
       tier: 'top50',
-      symbols: [], // Will be populated dynamically
-      intervalSeconds: 600,
-      confidenceThreshold: 82,
+      symbols: ['MOODENGUSDT', 'FIGHTUSDT', 'DEEPUSDT', 'MAGICUSDT', 'TRIAUSDT', 'CLOUSDT', 'MERLUSDT', 'ESPUSDT', 'TNSRUSDT', 'UMAUSDT'],
+      intervalSeconds: 300, // Faster from 600
+      confidenceThreshold: 75, // Lowered from 82
     },
   };
 
