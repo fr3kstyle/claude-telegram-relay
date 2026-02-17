@@ -46,7 +46,9 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 **Completed:**
 - [x] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC (**DEPLOYED** 2026-02-17)
 - [x] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPCs (**DEPLOYED** 2026-02-17)
-- [x] `20260217020000_email_stats_rpc.sql` - Email stats RPCs (**DEPLOYED** 2026-02-17)
+
+**Blocked - Needs Manual Action:**
+- [ ] `20260217020000_email_stats_rpc.sql` - Email stats RPCs (run via Supabase SQL Editor or `scripts/apply-email-stats-migration.sh`)
 
 **Trading System Migrations** (apply in order - tables don't exist yet):
 - [ ] `20260217170000_trading_market_data.sql` - OHLCV, features, market structure
@@ -70,7 +72,15 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 | scanner-top50 | 58MB | Running |
 | **Total PM2** | **681MB** | All 12 services online |
 
-### Recent Completions (Cycle 78)
+### Recent Completions
 - [x] PM2 daemon mode for goal-engine, deep-think, pattern-miner (prevents restart loops)
 - [x] Graceful degradation action completed (SupabaseResilience layer integrated)
 - [x] Trading scanner resource review completed (scanners running within budget)
+- [x] OAuth scopes and consent flow documentation completed (Cycle 79)
+
+### Weekly Reminders
+- [ ] **Monday:** Review @BotNews Telegram channel for Telegram Bot API updates
+- [ ] **Quarterly:** Review OAuth provider changelogs (Google Workspace, Microsoft 365 dev blogs)
+
+### Enhancement Backlog
+- [ ] OpenAI Whisper fallback for transcription (OPENAI_API_KEY available, add to transcribeAudio function)
