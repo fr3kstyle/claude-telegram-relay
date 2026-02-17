@@ -401,5 +401,3 @@ async function main() {
 if (import.meta.main) {
   main().catch(console.error);
 }
-
-import { TradeExecutor } from './trade-executor';
