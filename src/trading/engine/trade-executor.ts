@@ -225,6 +225,50 @@ export class TradeExecutor {
   }
 
   /**
+   * Set trailing stop on open position
+   * @param symbol - Trading pair
+   * @param trailPercent - Trailing distance in percent (min 0.5, recommended 1.0+)
+   * @param activationPrice - Price at which trailing becomes active (optional)
+   */
+  async setTrailingStop(
+    symbol: string,
+    trailPercent: number = 1.0,
+    activationPrice?: number
+  ): Promise<boolean> {
+    const endpoint = '/v5/position/trading-stop';
+
+    // Ensure minimum trail percent
+    const trail = Math.max(0.5, trailPercent);
+
+    const body: Record<string, any> = {
+      category: 'linear',
+      symbol,
+      positionIdx: 0, // One-way mode
+      trailingStop: trail.toFixed(1),
+      tpslMode: 'Full',
+    };
+
+    if (activationPrice) {
+      body.activePrice = activationPrice.toFixed(5);
+    }
+
+    try {
+      const response = await this.signedRequest('POST', endpoint, body);
+
+      if (response.retCode !== 0) {
+        console.error('[Executor] Trailing stop error:', response.retMsg);
+        return false;
+      }
+
+      console.log(`[Executor] Trailing stop set: ${trail}% trail${activationPrice ? ', activation at ' + activationPrice : ''}`);
+      return true;
+    } catch (error) {
+      console.error('[Executor] Exception setting trailing stop:', error);
+      return false;
+    }
+  }
+
+  /**
    * Set stop loss order
    */
   async setStopLoss(

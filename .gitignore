@@ -45,3 +45,5 @@ check-order.ts
 trailing-stop.ts
 test-trade.ts
 trading-status.ts
+fix-trailing.ts
+check-signals.ts
