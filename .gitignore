@@ -32,3 +32,15 @@ Thumbs.db
 # Google OAuth
 google-credentials.json
 google-tokens/
+
+# Microsoft OAuth
+microsoft-credentials.json
+
+# Local test scripts with potential secrets
+*-local-*.ts
+*-local-*.js
+
+# Ad-hoc test scripts (may contain secrets)
+check-order.ts
+trailing-stop.ts
+test-trade.ts

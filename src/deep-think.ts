@@ -38,6 +38,7 @@ const RELAY_DIR = join(process.env.HOME || "~", ".claude-relay");
 
 const MIN_IDLE_MINUTES = parseInt(process.env.DEEP_THINK_IDLE_MINUTES || "5");
 const MIN_GOALS = parseInt(process.env.DEEP_THINK_MIN_GOALS || "2");
+const CHECK_INTERVAL_MS = 60 * 1000; // Check every minute
 
 // Supabase
 const supabase: SupabaseClient | null =
@@ -407,12 +408,25 @@ function extractRisks(text: string): string[] {
 
 async function main() {
   console.log("[DEEP-THINK] High-Token Reasoning Engine");
+  console.log(`[DEEP-THINK] Check interval: ${CHECK_INTERVAL_MS / 1000}s, min idle: ${MIN_IDLE_MINUTES}m, min goals: ${MIN_GOALS}`);
 
   // Ensure state directory exists
   const { mkdir } = await import("fs/promises");
   await mkdir(RELAY_DIR, { recursive: true });
 
+  // Run initial check immediately
   await runDeepThink();
+
+  // Then check periodically - idling keeps PM2 from restarting
+  setInterval(async () => {
+    try {
+      await runDeepThink();
+    } catch (error) {
+      console.error("[DEEP-THINK] Error in cycle:", error);
+    }
+  }, CHECK_INTERVAL_MS);
+
+  console.log("[DEEP-THINK] Idling, will check again in 60s");
 }
 
 main().catch(console.error);

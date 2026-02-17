@@ -45,7 +45,8 @@ module.exports = {
       cron_restart: "0 */2 * * *",
       autorestart: true,
       restart_delay: 60000,
-      max_restarts: 10,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
     {
@@ -60,7 +61,8 @@ module.exports = {
       cron_restart: "30 * * * *",
       autorestart: true,
       restart_delay: 60000,
-      max_restarts: 10,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
 
@@ -175,7 +177,8 @@ module.exports = {
       cron_restart: "0 * * * *",
       autorestart: true,
       restart_delay: 60000,
-      max_restarts: 10,
+      max_restarts: 30,
+      min_uptime: "10s",
       watch: false,
     },
 

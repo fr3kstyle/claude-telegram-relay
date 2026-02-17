@@ -25,6 +25,8 @@ const supabase: SupabaseClient | null =
     ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
     : null;
 
+const CHECK_INTERVAL_MS = 60 * 60 * 1000; // Check every hour
+
 // ============================================================
 // TYPES
 // ============================================================
@@ -193,7 +195,8 @@ export async function createAction(
 export async function decomposeGoal(goalId: string): Promise<DecompositionResult | null> {
   const goal = await getGoal(goalId);
   if (!goal) {
-    console.error("[GOAL-ENGINE] Goal not found:", goalId);
+    // Goal was deleted between RPC call and fetch - this is normal (race condition)
+    // Don't log as error, just skip silently
     return null;
   }
 
@@ -380,16 +383,33 @@ async function main() {
   const goalId = process.argv[2];
 
   if (goalId) {
-    // Decompose specific goal
+    // One-shot: decompose specific goal and exit
     console.log(`[GOAL-ENGINE] Decomposing goal: ${goalId}`);
     const result = await executeDecomposition(goalId);
     console.log(`[GOAL-ENGINE] Result: ${result ? "Success" : "Failed"}`);
-  } else {
-    // Decompose all complex goals
-    console.log("[GOAL-ENGINE] Finding goals to decompose...");
-    const count = await decomposeAllComplexGoals();
-    console.log(`[GOAL-ENGINE] Decomposed ${count} goals`);
+    return;
   }
+
+  // Daemon mode: run periodically and idle
+  console.log("[GOAL-ENGINE] Starting daemon mode...");
+  console.log(`[GOAL-ENGINE] Check interval: ${CHECK_INTERVAL_MS / 60000} minutes`);
+
+  // Run initial check
+  const count = await decomposeAllComplexGoals();
+  console.log(`[GOAL-ENGINE] Decomposed ${count} goals`);
+
+  // Check periodically - idling keeps PM2 from restarting
+  setInterval(async () => {
+    try {
+      console.log("[GOAL-ENGINE] Finding goals to decompose...");
+      const count = await decomposeAllComplexGoals();
+      console.log(`[GOAL-ENGINE] Decomposed ${count} goals`);
+    } catch (error) {
+      console.error("[GOAL-ENGINE] Error in cycle:", error);
+    }
+  }, CHECK_INTERVAL_MS);
+
+  console.log("[GOAL-ENGINE] Idling, will check again in 1 hour");
 }
 
 // Run if called directly

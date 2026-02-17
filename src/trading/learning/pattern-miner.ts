@@ -451,12 +451,16 @@ export class PatternMiner {
 // Main Entry Point (runs hourly via cron)
 // ============================================================
 
+const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
 async function main() {
   console.log('='.repeat(50));
   console.log('BEHEMOTH Pattern Miner');
   console.log('='.repeat(50));
 
   const miner = new PatternMiner();
+
+  // Initial run
   const patterns = await miner.minePatterns();
 
   console.log('[PatternMiner] Discovered patterns:');
@@ -467,6 +471,22 @@ async function main() {
   }
 
   console.log(`[PatternMiner] Total: ${patterns.length} significant patterns`);
+
+  // Daemon mode: check hourly and idle
+  console.log(`[PatternMiner] Idling, will check again in 1 hour`);
+
+  setInterval(async () => {
+    try {
+      console.log('='.repeat(50));
+      console.log('[PatternMiner] Hourly pattern mining cycle');
+      console.log('='.repeat(50));
+
+      const patterns = await miner.minePatterns();
+      console.log(`[PatternMiner] Total: ${patterns.length} significant patterns`);
+    } catch (error) {
+      console.error('[PatternMiner] Error in cycle:', error);
+    }
+  }, CHECK_INTERVAL_MS);
 }
 
 if (import.meta.main) {
