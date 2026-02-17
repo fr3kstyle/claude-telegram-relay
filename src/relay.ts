@@ -75,6 +75,8 @@ const SUPABASE_KEY =
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const GROQ_WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-large-v3-turbo";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_WHISPER_MODEL = process.env.OPENAI_WHISPER_MODEL || "whisper-1";
 const FFMPEG_PATH = process.env.FFMPEG_PATH || "/usr/bin/ffmpeg";
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
@@ -111,6 +113,19 @@ const groqCircuitBreaker = circuitBreakers.get("groq-whisper", {
   onClose: (name) => {
     console.log(`[CircuitBreaker:${name}] CLOSED - Groq API recovered`);
     logEventV2("circuit_close", `Circuit breaker CLOSED: ${name}`, { service: "groq" }).catch(() => {});
+  },
+});
+
+const openaiWhisperCircuitBreaker = circuitBreakers.get("openai-whisper", {
+  failureThreshold: 3,
+  resetTimeout: 60000, // 1 minute
+  onOpen: (name, failures) => {
+    console.log(`[CircuitBreaker:${name}] OPEN after ${failures} failures - OpenAI Whisper fallback unavailable`);
+    logEventV2("circuit_open", `Circuit breaker OPEN: ${name}`, { service: "openai-whisper", failures }).catch(() => {});
+  },
+  onClose: (name) => {
+    console.log(`[CircuitBreaker:${name}] CLOSED - OpenAI Whisper recovered`);
+    logEventV2("circuit_close", `Circuit breaker CLOSED: ${name}`, { service: "openai-whisper" }).catch(() => {});
   },
 });
 
@@ -2346,12 +2361,12 @@ async function processIntents(response: string, threadDbId?: string): Promise<st
 }
 
 // ============================================================
-// VOICE TRANSCRIPTION (Groq Whisper API)
+// VOICE TRANSCRIPTION (Groq Whisper API with OpenAI fallback)
 // ============================================================
 
 async function transcribeAudio(audioPath: string): Promise<string> {
-  if (!GROQ_API_KEY) {
-    throw new Error("GROQ_API_KEY not set — cannot transcribe audio");
+  if (!GROQ_API_KEY && !OPENAI_API_KEY) {
+    throw new Error("Neither GROQ_API_KEY nor OPENAI_API_KEY set — cannot transcribe audio");
   }
 
   // Convert .oga to .wav for Whisper API (smaller + more compatible)
@@ -2375,53 +2390,99 @@ async function transcribeAudio(audioPath: string): Promise<string> {
   );
   await ffmpeg.exited;
 
-  // Send to Groq Whisper API (with circuit breaker protection)
   const audioBuffer = await readFile(wavPath);
-  const formData = new FormData();
-  formData.append("file", new Blob([audioBuffer], { type: "audio/wav" }), "audio.wav");
-  formData.append("model", GROQ_WHISPER_MODEL);
-  // No language param — let Whisper auto-detect for correct multilingual support
 
-  try {
-    const response = await groqCircuitBreaker.execute(async () => {
-      return await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-        },
-        body: formData,
-      });
+  // Try Groq first (faster and cheaper), then fallback to OpenAI
+  const providers: Array<{ name: string; key: string; model: string; url: string; breaker: typeof groqCircuitBreaker }> = [];
+
+  if (GROQ_API_KEY) {
+    providers.push({
+      name: "Groq",
+      key: GROQ_API_KEY,
+      model: GROQ_WHISPER_MODEL,
+      url: "https://api.groq.com/openai/v1/audio/transcriptions",
+      breaker: groqCircuitBreaker,
     });
+  }
 
-    // Cleanup wav immediately
-    await unlink(wavPath).catch(() => {});
+  if (OPENAI_API_KEY) {
+    providers.push({
+      name: "OpenAI",
+      key: OPENAI_API_KEY,
+      model: OPENAI_WHISPER_MODEL,
+      url: "https://api.openai.com/v1/audio/transcriptions",
+      breaker: openaiWhisperCircuitBreaker,
+    });
+  }
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error(`Groq Whisper error ${response.status}: ${errText}`);
-      // Log rate limit events for observability
-      if (response.status === 429) {
-        logEventV2("rate_limit", "Groq Whisper rate limited", {
-          service: "groq",
-          endpoint: "transcriptions",
-          model: GROQ_WHISPER_MODEL,
-          status: 429,
-          response: errText.substring(0, 500),
+  const errors: string[] = [];
+
+  for (const provider of providers) {
+    try {
+      const formData = new FormData();
+      formData.append("file", new Blob([audioBuffer], { type: "audio/wav" }), "audio.wav");
+      formData.append("model", provider.model);
+      // No language param — let Whisper auto-detect for correct multilingual support
+
+      const response = await provider.breaker.execute(async () => {
+        return await fetch(provider.url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${provider.key}`,
+          },
+          body: formData,
+        });
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error(`${provider.name} Whisper error ${response.status}: ${errText}`);
+        // Log rate limit events for observability
+        if (response.status === 429) {
+          logEventV2("rate_limit", `${provider.name} Whisper rate limited`, {
+            service: provider.name.toLowerCase(),
+            endpoint: "transcriptions",
+            model: provider.model,
+            status: 429,
+            response: errText.substring(0, 500),
+          }).catch(() => {});
+        }
+        errors.push(`${provider.name}: ${response.status}`);
+        continue; // Try next provider
+      }
+
+      // Success - cleanup and return
+      await unlink(wavPath).catch(() => {});
+      const result = await response.json() as { text: string };
+
+      // Log fallback usage if not Groq (primary)
+      if (provider.name !== "Groq" && providers.length > 1) {
+        logEventV2("transcription_fallback", `Used ${provider.name} as fallback`, {
+          provider: provider.name,
+          model: provider.model,
         }).catch(() => {});
       }
-      throw new Error(`Transcription failed: ${response.status}`);
-    }
 
-    const result = await response.json() as { text: string };
-    return result.text.trim();
-  } catch (error) {
-    // Cleanup wav on error too
-    await unlink(wavPath).catch(() => {});
-    if (error instanceof CircuitOpenError) {
-      throw new Error(`Voice transcription temporarily unavailable (Groq API circuit open). Please try again in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`);
+      return result.text.trim();
+    } catch (error) {
+      if (error instanceof CircuitOpenError) {
+        console.log(`[${provider.name}] Circuit breaker open, skipping`);
+        errors.push(`${provider.name}: circuit open`);
+        continue; // Try next provider
+      }
+      errors.push(`${provider.name}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
     }
-    throw error;
   }
+
+  // All providers failed
+  await unlink(wavPath).catch(() => {});
+
+  if (errors.length === 0) {
+    throw new Error("No transcription providers configured");
+  }
+
+  throw new Error(`All transcription providers failed: ${errors.join("; ")}`);
 }
 
 // ============================================================
