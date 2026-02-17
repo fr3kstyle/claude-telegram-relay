@@ -43,11 +43,13 @@ Stay silent (HEARTBEAT_OK) when:
 
 ### Pending Supabase Migrations
 Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/project/nlkgqooefwbupwubloae/sql/new):
-- [ ] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC to query correct table
+- [x] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC to query correct table (**VERIFIED DEPLOYED** 2026-02-17)
 - [ ] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPC functions
 - [ ] `20260217020000_email_stats_rpc.sql` - Email stats aggregation RPCs
 
-Note: `memory` and `global_memory` tables both exist. match_memory should query `memory` table.
+Note: match_memory RPC confirmed working. Remaining 2 migrations can be applied via:
+- Manual: Supabase Dashboard SQL Editor
+- Automated: `DATABASE_URL="..." bun run migrate` (get DATABASE_URL from Supabase Dashboard > Settings > Database > Connection string)
 
 ### Memory Constraints
 - System has 3.8GB RAM, ~1.9GB available
