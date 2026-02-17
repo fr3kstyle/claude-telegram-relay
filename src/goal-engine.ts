@@ -88,7 +88,7 @@ export async function getGoal(goalId: string): Promise<Goal | null> {
   if (!supabase) return null;
 
   const { data, error } = await supabase
-    .from("memory")
+    .from("global_memory")
     .select("*")
     .eq("id", goalId)
     .eq("type", "goal")
@@ -146,7 +146,7 @@ export async function createSubGoal(
   }
 
   const { data, error } = await supabase
-    .from("memory")
+    .from("global_memory")
     .insert({
       type: "goal",
       content,
@@ -185,7 +185,7 @@ export async function createAction(
   }
 
   const { data, error } = await supabase
-    .from("memory")
+    .from("global_memory")
     .insert({
       type: "action",
       content,
@@ -359,7 +359,7 @@ export async function getGoalHierarchy(goalId: string): Promise<any> {
 
   // Get the goal and all its descendants
   const { data: goal } = await supabase
-    .from("memory")
+    .from("global_memory")
     .select("*")
     .eq("id", goalId)
     .single();
@@ -367,7 +367,7 @@ export async function getGoalHierarchy(goalId: string): Promise<any> {
   if (!goal) return null;
 
   const { data: children } = await supabase
-    .from("memory")
+    .from("global_memory")
     .select("*")
     .eq("parent_id", goalId)
     .order("priority", { ascending: false });
