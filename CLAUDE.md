@@ -189,6 +189,12 @@ Note: Session state is stored per-thread in Supabase (`threads.claude_session_id
 
 The relay is designed to remain operational even when Supabase (the persistence layer) is unavailable. All Supabase-dependent functions include fallback behavior:
 
+**Supabase Resilience Layer** (`src/utils/supabase-resilience.ts`):
+- Circuit breaker protection: Opens after 3 consecutive failures, auto-recovers after 30s
+- In-memory read cache: 1-minute TTL for facts, goals, and soul data
+- Health monitoring: `checkHealth()` method for connectivity testing
+- All read operations return cached data when circuit is open
+
 **Memory system fallbacks:**
 - `getMemoryContext()` — Returns empty array `[]` if Supabase is down; prompt continues without memory context
 - `getRelevantMemory()` — Tries 3 fallback methods in order: local semantic search → RPC text search → ILIKE query → returns empty
