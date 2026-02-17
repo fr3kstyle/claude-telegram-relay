@@ -40,6 +40,7 @@ import { startTokenRefreshScheduler, stopTokenRefreshScheduler } from "./auth/in
 import { getTokenManager, type OAuthToken } from "./auth/token-manager.ts";
 import { parseEmailAddArgs, parseEmailVerifyArgs, EMAIL_ADD_USAGE } from "./utils/command-parser.ts";
 import { circuitBreakers, CircuitOpenError } from "./utils/circuit-breaker.ts";
+import { rateLimitTrackers } from "./utils/rate-limit-tracker.ts";
 
 // ============================================================
 // THREAD CONTEXT TYPES
@@ -1726,6 +1727,29 @@ async function heartbeatTick(): Promise<void> {
       if (hasOpenCircuits) {
         const openCircuits = breakerStats.filter(s => s.state === 'open').map(s => s.name);
         console.log(`Heartbeat: open circuits: ${openCircuits.join(', ')}`);
+      }
+    }
+
+    // Step 0.66: Log rate limit stats (log if any low or on Sunday for full stats)
+    const rateLimitStatuses = rateLimitTrackers.getAllStatuses();
+    const lowRateLimits = rateLimitStatuses.filter(s => s.state === 'warning' || s.state === 'critical');
+    const hasCriticalLimits = rateLimitStatuses.some(s => s.state === 'critical');
+    const shouldLogRateLimits = lowRateLimits.length > 0 || new Date().getDay() === 0;
+    if (shouldLogRateLimits && rateLimitStatuses.length > 0) {
+      await logEventV2("rate_limits", "API rate limit status", {
+        trackers: rateLimitStatuses.map(s => ({
+          name: s.name,
+          limit: s.limit,
+          remaining: s.remaining,
+          percent_remaining: s.percentRemaining,
+          state: s.state,
+          reset_at: s.resetAt?.toISOString(),
+        })),
+        has_critical: hasCriticalLimits,
+      });
+      if (lowRateLimits.length > 0) {
+        const lowNames = lowRateLimits.map(s => `${s.name}(${s.remaining}/${s.limit})`);
+        console.log(`Heartbeat: low rate limits: ${lowNames.join(', ')}`);
       }
     }
 
