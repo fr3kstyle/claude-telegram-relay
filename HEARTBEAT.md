@@ -34,10 +34,12 @@ Stay silent (HEARTBEAT_OK) when:
 - Outside active hours (11pm-8am)
 - No pending items requiring attention
 
-## Current Status (Updated 2026-02-17)
+## Current Status (Updated 2026-02-17 14:00)
 
 ### Active Goals
-- [P3] Outlook OAuth: Code complete - needs microsoft-credentials.json from Azure Portal (by 3/15/2026)
+- [P0] Complete OAuth integration hardening (deadline 3/31)
+- [P3] Outlook OAuth: Code complete - needs microsoft-credentials.json from Azure Portal (see docs/azure-credentials-setup.md)
+- [P4] Apply email stats RPC migration via Supabase Dashboard (deadline 2/24)
 
 ### Pending Supabase Migrations
 Run these in Supabase Dashboard SQL Editor:
@@ -45,11 +47,11 @@ Run these in Supabase Dashboard SQL Editor:
 - [ ] `20260217020000_email_stats_rpc.sql` - Email stats aggregation RPCs
 
 ### Memory Constraints
-- System has 3.8GB RAM, ~2GB available
-- Agent-loop stable with 34m+ uptime after OOM issues resolved
-- Multiple Claude processes consume ~750MB total
+- System has 3.8GB RAM, ~1.9GB available
+- Agent-loop stable (43m+ uptime)
 - Deep-think and goal-engine stopped to conserve memory
 
 ### Recent Completions
 - [x] RLS policies added to trading and self-improvement tables (2026-02-17)
 - [x] Trading commands and PM2 scanner config (2026-02-17)
+- [x] Azure credentials setup guide (docs/azure-credentials-setup.md)

@@ -78,9 +78,36 @@ Create the file at `~/.claude-relay/microsoft-credentials.json`:
 }
 ```
 
+**Schema Reference:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `client_id` | string | Yes | Application (client) ID from Azure Portal Overview |
+| `client_secret` | string | Yes | Secret value from Certificates & secrets (not Secret ID) |
+| `redirect_uris` | string[] | Yes | Array of redirect URIs; first entry is used for OAuth flow |
+
+**Example with real-ish values:**
+
+```json
+{
+  "client_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "client_secret": "abc123~DEF456-ghi789JKL012mno345PQR",
+  "redirect_uris": ["http://localhost"]
+}
+```
+
 Replace:
 - `YOUR_APPLICATION_CLIENT_ID` with the Application (client) ID from Step 3
 - `YOUR_CLIENT_SECRET_VALUE` with the secret value from Step 4
+
+> **TypeScript Interface:** The `Credentials` interface in `src/microsoft-oauth.ts` defines the schema:
+> ```typescript
+> interface Credentials {
+>   client_id: string;
+>   client_secret: string;
+>   redirect_uris: string[];
+> }
+> ```
 
 ### 7. Verify Setup
 
