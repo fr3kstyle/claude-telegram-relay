@@ -81,10 +81,11 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 - [x] Trading scanner resource review completed (scanners running within budget)
 - [x] OAuth scopes and consent flow documentation completed (Cycle 79)
 - [x] OpenAI Whisper fallback for transcription (Cycle 80) - automatic failover when Groq fails
+- [x] OAuth provider RSS feed monitoring script (Cycle 81) - `scripts/check-oauth-feeds.ts`
 
 ### Weekly Reminders
 - [ ] **Monday:** Review @BotNews Telegram channel for Telegram Bot API updates
-- [ ] **Quarterly:** Review OAuth provider changelogs (Google Workspace, Microsoft 365 dev blogs)
+- [ ] **Weekly:** Run `bun run scripts/check-oauth-feeds.ts` to check OAuth provider changelogs (or add as cron job)
 
 ### Enhancement Backlog
-- [ ] Subscribe to Google Workspace and Microsoft 365 developer blogs for OAuth changelog monitoring
+- [x] OAuth provider changelog monitoring (scripts/check-oauth-feeds.ts created Cycle 81)
