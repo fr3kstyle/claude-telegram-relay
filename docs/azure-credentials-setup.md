@@ -122,6 +122,36 @@ This will:
 2. Display an authorization URL
 3. Guide you through the consent flow
 
+## Required Scopes Summary
+
+| Scope | Functionality | Required |
+|-------|--------------|----------|
+| `Mail.Read` | Read inbox, view messages | Yes |
+| `User.Read` | Sign in, read profile | Yes |
+| `Mail.ReadWrite` | Modify emails, mark as read | No |
+| `Mail.Send` | Send emails | No |
+| `Calendars.Read` | View calendars | No |
+| `Calendars.ReadWrite` | Create/edit events | No |
+| `Files.Read` | Read OneDrive files | No |
+| `Files.ReadWrite` | Modify OneDrive files | No |
+| `offline_access` | Maintain access (refresh tokens) | Recommended |
+
+The relay will warn you if critical scopes (`Mail.Read`, `User.Read`) are missing during authorization.
+
+## Consent Flow
+
+The OAuth consent flow works as follows:
+
+1. **Run setup command**: `bun run src/microsoft-oauth.ts setup`
+2. **Visit URL**: Console prints a Microsoft authorization URL
+3. **Sign in**: Authenticate with your Microsoft account
+4. **Grant permissions**: Review and allow the requested scopes
+5. **Copy code**: Microsoft redirects to localhost with a `code` parameter
+6. **Paste code**: Enter the code in the terminal
+7. **Token saved**: Access and refresh tokens are saved locally
+
+For multiple accounts, run the setup command again with a different email.
+
 ## Quick Reference
 
 | Credential | Azure Portal Location | JSON Field |

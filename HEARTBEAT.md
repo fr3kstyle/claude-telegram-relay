@@ -34,41 +34,43 @@ Stay silent (HEARTBEAT_OK) when:
 - Outside active hours (11pm-8am)
 - No pending items requiring attention
 
-## Current Status (Updated 2026-02-17 14:00)
+## Current Status (Updated 2026-02-17 15:20)
 
 ### Active Goals
 - [P0] Complete OAuth integration hardening (deadline 3/31)
 - [P3] Outlook OAuth: Code complete - needs microsoft-credentials.json from Azure Portal (see docs/azure-credentials-setup.md)
-- [x] Apply email stats RPC migration via Supabase Dashboard (completed 2026-02-17)
 
 ### Pending Supabase Migrations
 Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/project/nlkgqooefwbupwubloae/sql/new):
-- [x] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC to query correct table (**VERIFIED DEPLOYED** 2026-02-17)
-- [x] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPC functions (**VERIFIED DEPLOYED** 2026-02-17)
-- [x] `20260217020000_email_stats_rpc.sql` - Email stats aggregation RPCs (**VERIFIED DEPLOYED** 2026-02-17)
-- [ ] `20260217133000_rls_audit_fix.sql` - RLS policies for trading/self-improvement tables (**NEEDS MANUAL APPLICATION**)
-  - Some tables (risk_metrics, reflections) still accessible via anon key
-  - Copy content from supabase/migrations/20260217133000_rls_audit_fix.sql
 
-Note: All migrations verified via `bun run scripts/apply-migrations.ts`
+**Completed:**
+- [x] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC (**DEPLOYED** 2026-02-17)
+- [x] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPCs (**DEPLOYED** 2026-02-17)
+- [x] `20260217020000_email_stats_rpc.sql` - Email stats RPCs (**DEPLOYED** 2026-02-17)
 
-### Memory Constraints
-- System has 3.8GB RAM, ~1.4GB available
-- Agent-loop stable (55m+ uptime)
-- Deep-think and goal-engine stopped to conserve memory
+**Trading System Migrations** (apply in order - tables don't exist yet):
+- [ ] `20260217170000_trading_market_data.sql` - OHLCV, features, market structure
+- [ ] `20260217180000_trading_signals.sql` - Signal generation tables
+- [ ] `20260217190000_trading_executions.sql` - Trade execution tables
+- [ ] `20260217200000_trading_risk.sql` - Risk management tables
+- [ ] `20260217210000_trading_ml.sql` - ML model tables
+- [ ] `20260217220000_trading_system.sql` - System config tables
+- [ ] `20260217133000_rls_audit_fix.sql` - RLS policies (depends on above)
 
-### Trading Scanner Resource Analysis (2026-02-17 Cycle 70)
-| Scanner | Symbols | Interval | Est. Memory | Status |
-|---------|---------|----------|-------------|--------|
-| top10 | 2 (BTC, ETH) | 60s | ~50-80MB | Ready to enable |
-| top20 | 6 mid-cap | 120s | ~50-80MB | Skip on low-memory |
-| top50 | 50 dynamic | 600s | ~80-120MB | Skip on low-memory |
+### System Resources
+- System has 3.8GB RAM, ~1.8GB available
+- All PM2 services online (12 services, 681MB total)
+- Trading scanners running: top10, top20, top50 (combined ~185MB)
 
-**Recommendation:** Only enable `scanner-top10` on this 3.8GB system. Add top20 only after monitoring memory for 24h. Skip top50 entirely or run only during low-activity windows (2am-6am).
+### Trading Scanner Resource Analysis (Updated 2026-02-17 Cycle 78)
+| Scanner | Memory | Status |
+|---------|--------|--------|
+| scanner-top10 | 64MB | Running |
+| scanner-top20 | 63MB | Running |
+| scanner-top50 | 58MB | Running |
+| **Total PM2** | **681MB** | All 12 services online |
 
-### Recent Completions
-- [x] RLS policies added to trading and self-improvement tables (2026-02-17)
-- [x] Trading commands and PM2 scanner config (2026-02-17)
-- [x] Azure credentials setup guide (docs/azure-credentials-setup.md)
-- [x] microsoft-credentials.json schema documented (2026-02-17)
-- [x] Goal hygiene check: 299 entries, 0 stale, 0 duplicates, 0 malformed (2026-02-17 cycle 69)
+### Recent Completions (Cycle 78)
+- [x] PM2 daemon mode for goal-engine, deep-think, pattern-miner (prevents restart loops)
+- [x] Graceful degradation action completed (SupabaseResilience layer integrated)
+- [x] Trading scanner resource review completed (scanners running within budget)
