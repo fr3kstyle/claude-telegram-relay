@@ -121,6 +121,12 @@ tail -f ~/.claude-relay/relay-error.log
 - `supabase-schema.sql`: Original v1 schema (reference only)
 - `supabase-schema-v2.sql`: Current v2 schema (threads, global_memory, bot_soul, logs_v2)
 
+**Utility scripts** (`scripts/` directory) — Maintenance and monitoring tools:
+- `check-oauth-feeds.ts`: Monitors Google/Microsoft OAuth provider blogs for API changes (runs via cron)
+- `check-memory.ts`: Reports active goals, actions, and memory table statistics
+- `apply-migrations.ts`: Applies pending Supabase migrations via Management API
+- `apply-email-stats-migration.sh`: Shell wrapper for email stats RPC deployment
+
 ## Supabase Schema (v2)
 
 Tables used by the relay:
