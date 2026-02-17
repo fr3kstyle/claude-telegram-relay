@@ -15,6 +15,7 @@ import { spawn } from "bun";
 import { writeFile, mkdir, readFile, unlink, open, readdir } from "fs/promises";
 import { join, basename } from "path";
 import { createClient } from "@supabase/supabase-js";
+import { initSupabaseResilience, getSupabaseResilience } from "./utils/supabase-resilience.ts";
 import { Cron } from "croner";
 import { searchMemoryLocal, generateEmbedding } from "./embed-local.ts";
 // Email operations now use provider abstraction
@@ -288,6 +289,13 @@ const supabase =
     ? createClient(SUPABASE_URL, SUPABASE_KEY)
     : null;
 
+// Initialize resilience layer for graceful degradation
+const supabaseResilience = initSupabaseResilience(supabase, {
+  cacheTtl: 60000, // 1 minute cache
+  maxCacheSize: 100,
+  debug: false,
+});
+
 // ============================================================
 // SUPABASE v2: Thread-aware helpers
 // ============================================================
@@ -439,32 +447,34 @@ async function getRecentThreadMessages(
 }
 
 async function getMemoryContext(): Promise<string[]> {
-  if (!supabase) return [];
-  try {
-    // Try RPC first (global_memory)
-    const { data: rpcFacts } = await supabase.rpc("get_facts");
-    if (rpcFacts && rpcFacts.length > 0) {
-      return rpcFacts.map((m: { content: string }) => m.content);
-    }
+  // Use resilience layer for caching and circuit breaker protection
+  return supabaseResilience.read<string[]>(
+    "memory",
+    "facts",
+    async () => {
+      // Try RPC first (global_memory)
+      const { data: rpcFacts } = await supabase!.rpc("get_facts");
+      if (rpcFacts && rpcFacts.length > 0) {
+        return rpcFacts.map((m: { content: string }) => m.content);
+      }
 
-    // Fallback: query global_memory table directly
-    const { data: memoryFacts } = await supabase
-      .from("global_memory")
-      .select("content")
-      .eq("type", "fact")
-      .eq("status", "active")
-      .order("created_at", { ascending: false })
-      .limit(20);
+      // Fallback: query global_memory table directly
+      const { data: memoryFacts } = await supabase!
+        .from("global_memory")
+        .select("content")
+        .eq("type", "fact")
+        .eq("status", "active")
+        .order("created_at", { ascending: false })
+        .limit(20);
 
-    if (memoryFacts && memoryFacts.length > 0) {
-      return memoryFacts.map((m: { content: string }) => m.content);
-    }
+      if (memoryFacts && memoryFacts.length > 0) {
+        return memoryFacts.map((m: { content: string }) => m.content);
+      }
 
-    return [];
-  } catch (e) {
-    console.error("getMemoryContext error:", e);
-    return [];
-  }
+      return [];
+    },
+    [] // fallback value when Supabase is unavailable
+  );
 }
 
 async function insertMemory(
@@ -572,42 +582,46 @@ async function deleteMemory(searchText: string): Promise<boolean> {
 async function getActiveGoals(): Promise<
   Array<{ content: string; deadline: string | null; priority: number }>
 > {
-  if (!supabase) return [];
-  try {
-    // Try RPC first (global_memory)
-    const { data: rpcGoals } = await supabase.rpc("get_active_goals");
-    if (rpcGoals && rpcGoals.length > 0) {
-      return rpcGoals.map(
-        (g: { content: string; deadline: string | null; priority: number }) => ({
+  // Use resilience layer for caching and circuit breaker protection
+  return supabaseResilience.read<
+    Array<{ content: string; deadline: string | null; priority: number }>
+  >(
+    "memory",
+    "goals",
+    async () => {
+      // Try RPC first (global_memory)
+      const { data: rpcGoals } = await supabase!.rpc("get_active_goals");
+      if (rpcGoals && rpcGoals.length > 0) {
+        return rpcGoals.map(
+          (g: { content: string; deadline: string | null; priority: number }) => ({
+            content: g.content,
+            deadline: g.deadline,
+            priority: g.priority,
+          })
+        );
+      }
+
+      // Fallback: query global_memory table directly
+      const { data: memoryGoals } = await supabase!
+        .from("global_memory")
+        .select("content, deadline, priority")
+        .eq("type", "goal")
+        .eq("status", "active")
+        .order("priority", { ascending: false })
+        .limit(20);
+
+      if (memoryGoals && memoryGoals.length > 0) {
+        return memoryGoals.map((g: any) => ({
           content: g.content,
           deadline: g.deadline,
-          priority: g.priority,
-        })
-      );
-    }
+          priority: g.priority || 3,
+        }));
+      }
 
-    // Fallback: query global_memory table directly
-    const { data: memoryGoals } = await supabase
-      .from("global_memory")
-      .select("content, deadline, priority")
-      .eq("type", "goal")
-      .eq("status", "active")
-      .order("priority", { ascending: false })
-      .limit(20);
-
-    if (memoryGoals && memoryGoals.length > 0) {
-      return memoryGoals.map((g: any) => ({
-        content: g.content,
-        deadline: g.deadline,
-        priority: g.priority || 3,
-      }));
-    }
-
-    return [];
-  } catch (e) {
-    console.error("getActiveGoals error:", e);
-    return [];
-  }
+      return [];
+    },
+    [] // fallback value when Supabase is unavailable
+  );
 }
 
 async function completeGoal(searchText: string): Promise<boolean> {
@@ -720,19 +734,23 @@ async function getRelevantMemory(
 }
 
 async function getActiveSoul(): Promise<string> {
-  if (!supabase) return "You are a helpful, concise assistant responding via Telegram.";
-  try {
-    const { data } = await supabase
-      .from("bot_soul")
-      .select("content")
-      .eq("is_active", true)
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .single();
-    return data?.content || "You are a helpful, concise assistant responding via Telegram.";
-  } catch (e) {
-    return "You are a helpful, concise assistant responding via Telegram.";
-  }
+  const defaultSoul = "You are a helpful, concise assistant responding via Telegram.";
+  // Use resilience layer for caching and circuit breaker protection
+  return supabaseResilience.read<string>(
+    "soul",
+    "active",
+    async () => {
+      const { data } = await supabase!
+        .from("bot_soul")
+        .select("content")
+        .eq("is_active", true)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .single();
+      return data?.content || defaultSoul;
+    },
+    defaultSoul // fallback value when Supabase is unavailable
+  );
 }
 
 async function setSoul(content: string): Promise<boolean> {
