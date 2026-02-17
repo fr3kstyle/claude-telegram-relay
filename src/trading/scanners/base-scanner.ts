@@ -258,8 +258,8 @@ export abstract class BaseScanner {
     takeProfit3: number;
     riskReward: number;
   } {
-    // Base stop loss at 1% for high leverage
-    const stopLossPercent = 1.0;
+    // Base stop loss at 1.5% for more breathing room
+    const stopLossPercent = 1.5;
     // Scale take profits based on confidence
     const tp1Multiplier = 1.5;
     const tp2Multiplier = 2.5;
