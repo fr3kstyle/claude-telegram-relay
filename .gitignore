@@ -41,9 +41,14 @@ microsoft-credentials.json
 *-local-*.js
 
 # Ad-hoc test scripts (may contain secrets)
+# Add new one-word scripts here to prevent accidental credential commits
 check-order.ts
 trailing-stop.ts
 test-trade.ts
 trading-status.ts
 fix-trailing.ts
 check-signals.ts
+add-pairs.ts
+reset-*.ts
+test-*.ts
+check-*.ts
