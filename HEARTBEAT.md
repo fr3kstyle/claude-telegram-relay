@@ -47,8 +47,11 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 - [x] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC (**DEPLOYED** 2026-02-17)
 - [x] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPCs (**DEPLOYED** 2026-02-17)
 
-**Blocked - Needs Manual Action:**
-- [ ] `20260217020000_email_stats_rpc.sql` - Email stats RPCs (run via Supabase SQL Editor or `scripts/apply-email-stats-migration.sh`)
+**Ready to Apply (Manual):**
+- [ ] `20260217020000_email_stats_rpc.sql` - Email stats RPCs (dependencies confirmed: email_accounts=3, email_messages=87)
+  - **Apply via:** https://supabase.com/dashboard/project/nlkgqooefwbupwubloae/sql/new
+  - Paste contents of `supabase/migrations/20260217020000_email_stats_rpc.sql` and click Run
+  - Creates: get_email_stats, get_email_volume_by_period, get_top_senders, get_email_account_health, get_recent_email_summary, get_label_distribution
 
 **Trading System Migrations** (apply in order - tables don't exist yet):
 - [ ] `20260217170000_trading_market_data.sql` - OHLCV, features, market structure
