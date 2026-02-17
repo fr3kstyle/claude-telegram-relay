@@ -84,7 +84,8 @@ You (Telegram) ──> Grammy Bot ──> Claude Code CLI ──> Tools, Web, Fi
 > # Install specific version (replace x.x.x with desired version)
 > npm install -g @anthropic-ai/claude-code@x.x.x
 > ```
-> The relay checks CLI version at startup and warns if it differs from the tested version.
+> **Tested with Claude CLI v2.1.39** — other versions may work but are not verified.
+> The relay logs the CLI version at startup for debugging.
 - **Telegram account** + a bot from [@BotFather](https://t.me/BotFather)
 - **[Supabase](https://supabase.com)** project (free tier works)
 
