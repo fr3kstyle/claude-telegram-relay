@@ -21,6 +21,46 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
+ * Validate memory content before insertion.
+ * Rejects malformed entries that could corrupt the memory system.
+ */
+function isValidMemoryContent(content: string, type: string): boolean {
+  // Must have content
+  if (!content || typeof content !== "string") return false;
+
+  const trimmed = content.trim();
+
+  // Minimum length - avoid trivial entries
+  if (trimmed.length < 10) return false;
+
+  // Maximum length (prevent runaway matches)
+  if (trimmed.length > 2000) return false;
+
+  // Must not be just punctuation, brackets, or special chars
+  if (!/[a-zA-Z0-9]/.test(trimmed)) return false;
+
+  // Must not start with closing bracket sequences (regex artifacts)
+  if (/^[\]`]+\s*[,\[]?/.test(trimmed)) return false;
+
+  // Must not be just code syntax fragments
+  if (/^\s*[`\[\]{}(),.]+\s*$/.test(trimmed)) return false;
+
+  // Must not contain unbalanced intent tags (partial matches)
+  const openTags = (trimmed.match(/\[(REMEMBER|GOAL|ACTION|STRATEGY|REFLECTION|BLOCKED|DONE|FORGET|CRON):/gi) || []).length;
+  const closeTags = (trimmed.match(/\]/g) || []).length;
+  // If it has open tags but unbalanced brackets, likely a partial match
+  if (openTags > 0 && closeTags < openTags) return false;
+
+  // Must not be a regex pattern fragment
+  if (/^\\s\*\(\.\+\?\)\\/.test(trimmed)) return false;
+
+  // Must have at least one complete word (3+ letters)
+  if (!/\b[a-zA-Z]{3,}\b/.test(trimmed)) return false;
+
+  return true;
+}
+
+/**
  * Parse Claude's response for memory intent tags.
  * Saves to Supabase and returns the cleaned response.
  */
@@ -35,9 +75,15 @@ export async function processMemoryIntents(
 
   // [REMEMBER: fact to store]
   for (const match of response.matchAll(/\[REMEMBER:\s*(.+?)\]/gi)) {
+    const content = match[1].trim();
+    if (!isValidMemoryContent(content, "fact")) {
+      console.log(`[Memory] Rejected malformed REMEMBER: "${content.substring(0, 50)}..."`);
+      clean = clean.replace(match[0], "");
+      continue;
+    }
     await supabase.from("memory").insert({
       type: "fact",
-      content: match[1].trim(),
+      content,
       status: "active",
     });
     clean = clean.replace(match[0], "");
@@ -64,9 +110,15 @@ export async function processMemoryIntents(
   for (const match of response.matchAll(
     /\[GOAL:\s*(.+?)(?:\s*\|\s*DEADLINE:\s*(.+?))?\]/gi
   )) {
+    const content = match[1].trim();
+    if (!isValidMemoryContent(content, "goal")) {
+      console.log(`[Memory] Rejected malformed GOAL: "${content.substring(0, 50)}..."`);
+      clean = clean.replace(match[0], "");
+      continue;
+    }
     await supabase.from("memory").insert({
       type: "goal",
-      content: match[1].trim(),
+      content,
       deadline: match[2]?.trim() || null,
       status: "active",
       priority: 3,
@@ -79,10 +131,16 @@ export async function processMemoryIntents(
   for (const match of response.matchAll(
     /\[ACTION:\s*(.+?)(?:\s*\|\s*PRIORITY:\s*(\d))?\]/gi
   )) {
+    const content = match[1].trim();
+    if (!isValidMemoryContent(content, "action")) {
+      console.log(`[Memory] Rejected malformed ACTION: "${content.substring(0, 50)}..."`);
+      clean = clean.replace(match[0], "");
+      continue;
+    }
     const priority = match[2] ? parseInt(match[2]) : 3;
     await supabase.from("memory").insert({
       type: "action",
-      content: match[1].trim(),
+      content,
       priority: Math.min(5, Math.max(1, priority)),
       status: "pending",
     });
@@ -92,9 +150,15 @@ export async function processMemoryIntents(
 
   // [STRATEGY: strategic direction]
   for (const match of response.matchAll(/\[STRATEGY:\s*(.+?)\]/gi)) {
+    const content = match[1].trim();
+    if (!isValidMemoryContent(content, "strategy")) {
+      console.log(`[Memory] Rejected malformed STRATEGY: "${content.substring(0, 50)}..."`);
+      clean = clean.replace(match[0], "");
+      continue;
+    }
     await supabase.from("memory").insert({
       type: "strategy",
-      content: match[1].trim(),
+      content,
       status: "active",
       weight: 2.5,
     });
@@ -104,9 +168,15 @@ export async function processMemoryIntents(
 
   // [REFLECTION: insight or lesson]
   for (const match of response.matchAll(/\[REFLECTION:\s*(.+?)\]/gi)) {
+    const content = match[1].trim();
+    if (!isValidMemoryContent(content, "reflection")) {
+      console.log(`[Memory] Rejected malformed REFLECTION: "${content.substring(0, 50)}..."`);
+      clean = clean.replace(match[0], "");
+      continue;
+    }
     await supabase.from("memory").insert({
       type: "reflection",
-      content: match[1].trim(),
+      content,
       status: "active",
     });
     clean = clean.replace(match[0], "");
