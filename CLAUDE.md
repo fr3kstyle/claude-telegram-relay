@@ -184,3 +184,31 @@ Note: Session state is stored per-thread in Supabase (`threads.claude_session_id
 - **ffmpeg** (system) — Audio format conversion (.oga → .wav)
 - **ElevenLabs API** (external) — Text-to-speech via eleven_v3 model
 - **croner** ^10+ — Cron expression parser for 5-field cron schedules with timezone support
+
+## Graceful Degradation
+
+The relay is designed to remain operational even when Supabase (the persistence layer) is unavailable. All Supabase-dependent functions include fallback behavior:
+
+**Memory system fallbacks:**
+- `getMemoryContext()` — Returns empty array `[]` if Supabase is down; prompt continues without memory context
+- `getRelevantMemory()` — Tries 3 fallback methods in order: local semantic search → RPC text search → ILIKE query → returns empty
+- `insertMemory()` / `deleteMemory()` — Returns `false` on failure; intent tag is silently dropped (non-blocking)
+- `getActiveSoul()` — Returns default personality string if database unavailable
+
+**Thread handling fallbacks:**
+- `getOrCreateThread()` — Returns `null` on failure; conversation continues without session persistence (no `--resume`)
+- `updateThreadSession()` — Silently fails; session won't persist across restarts
+- `insertThreadMessage()` — Logs error, continues; message history gap
+
+**Key principle:** All database operations are non-blocking. The relay prioritizes message delivery over persistence. If Supabase is down:
+1. Messages still flow through Telegram → Claude → response
+2. New conversations work (fresh Claude session each time)
+3. Memory/context features are degraded but not fatal
+4. Session persistence is lost until Supabase recovers
+
+**External API circuit breakers:**
+- Groq transcription: Circuit opens after 5 failures, auto-recovers after 60s
+- ElevenLabs TTS: Circuit opens after 5 failures, auto-recovers after 60s
+- Gmail/Outlook APIs: Per-provider circuit breakers with same thresholds
+
+When a circuit is open, users see a clear error message: "Voice transcription temporarily unavailable (Groq API circuit open). Please try again in N seconds."
