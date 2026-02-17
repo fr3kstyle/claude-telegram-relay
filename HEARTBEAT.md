@@ -46,6 +46,9 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 - [x] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC to query correct table (**VERIFIED DEPLOYED** 2026-02-17)
 - [x] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPC functions (**VERIFIED DEPLOYED** 2026-02-17)
 - [x] `20260217020000_email_stats_rpc.sql` - Email stats aggregation RPCs (**VERIFIED DEPLOYED** 2026-02-17)
+- [ ] `20260217133000_rls_audit_fix.sql` - RLS policies for trading/self-improvement tables (**NEEDS MANUAL APPLICATION**)
+  - Some tables (risk_metrics, reflections) still accessible via anon key
+  - Copy content from supabase/migrations/20260217133000_rls_audit_fix.sql
 
 Note: All migrations verified via `bun run scripts/apply-migrations.ts`
 

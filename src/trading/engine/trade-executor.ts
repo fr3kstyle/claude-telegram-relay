@@ -565,6 +565,18 @@ async function main() {
   console.log('BEHEMOTH Trade Executor');
   console.log('='.repeat(50));
 
+  // Guard: Check credentials before attempting API calls
+  if (!BYBIT_API_KEY || !BYBIT_API_SECRET) {
+    console.log('[Executor] Bybit credentials not configured - idling');
+    console.log('[Executor] Set BYBIT_API_KEY and BYBIT_API_SECRET to enable trading');
+    // Stay alive but idle - PM2 manages lifecycle
+    setInterval(() => {
+      // Heartbeat every 5 minutes to show we're alive
+      console.log('[Executor] Idle - waiting for Bybit credentials');
+    }, 300000);
+    return;
+  }
+
   const executor = new TradeExecutor();
 
   // Check balance
