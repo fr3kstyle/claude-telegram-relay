@@ -6,6 +6,7 @@
  */
 
 import { getTokenManager } from '../auth/token-manager.ts';
+import { circuitBreakers } from '../utils/circuit-breaker.ts';
 import type {
   EmailProvider,
   EmailMessage,
@@ -22,6 +23,14 @@ import type {
 
 const GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0';
 const TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+
+// Circuit breaker for Microsoft Graph API - prevents cascading failures
+const outlookCircuitBreaker = circuitBreakers.get('outlook-api', {
+  failureThreshold: 3,
+  resetTimeout: 60000,
+  onOpen: (name, failures) => console.log(`[CircuitBreaker:${name}] OPEN after ${failures} failures - Outlook API unavailable`),
+  onClose: (name) => console.log(`[CircuitBreaker:${name}] CLOSED - Outlook API recovered`),
+});
 
 // Microsoft Graph API types
 interface GraphMessageRecipient {
@@ -206,43 +215,45 @@ export class OutlookProvider implements EmailProvider {
   }
 
   /**
-   * Make authenticated request to Microsoft Graph API
+   * Make authenticated request to Microsoft Graph API (with circuit breaker protection)
    */
   private async fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
-    const headers = await this.getAuthHeaders();
-    const response = await fetch(`${GRAPH_API_BASE}${endpoint}`, {
-      ...options,
-      headers: { ...headers, ...options?.headers },
-    });
+    return outlookCircuitBreaker.execute(async () => {
+      const headers = await this.getAuthHeaders();
+      const response = await fetch(`${GRAPH_API_BASE}${endpoint}`, {
+        ...options,
+        headers: { ...headers, ...options?.headers },
+      });
 
-    // Log rate limit headers for observability (Microsoft uses different header names)
-    const rateLimit = response.headers.get('x-ratelimit-limit') || response.headers.get('ratecontrol-limit');
-    const rateRemaining = response.headers.get('x-ratelimit-remaining') || response.headers.get('ratecontrol-remaining');
-    if (rateLimit || rateRemaining) {
-      console.log(`[Graph API] Rate limit: ${rateRemaining}/${rateLimit} remaining`);
-    }
-
-    if (!response.ok) {
-      const error = await response.text();
-      // Token might be expired - invalidate and retry
-      // TokenManager will handle getting a fresh token on next getAccessToken call
-      if (response.status === 401) {
-        await getTokenManager().invalidateToken('microsoft', this.email, 'Graph API 401 - token expired');
-        const newHeaders = await this.getAuthHeaders();
-        const retryResponse = await fetch(`${GRAPH_API_BASE}${endpoint}`, {
-          ...options,
-          headers: { ...newHeaders, ...options?.headers },
-        });
-        if (retryResponse.ok) {
-          return retryResponse.json();
-        }
-        const retryError = await retryResponse.text();
-        throw new Error(`Graph API error after retry: ${retryResponse.status} - ${retryError}`);
+      // Log rate limit headers for observability (Microsoft uses different header names)
+      const rateLimit = response.headers.get('x-ratelimit-limit') || response.headers.get('ratecontrol-limit');
+      const rateRemaining = response.headers.get('x-ratelimit-remaining') || response.headers.get('ratecontrol-remaining');
+      if (rateLimit || rateRemaining) {
+        console.log(`[Graph API] Rate limit: ${rateRemaining}/${rateLimit} remaining`);
       }
-      throw new Error(`Graph API error: ${response.status} - ${error}`);
-    }
 
-    return response.json();
+      if (!response.ok) {
+        const error = await response.text();
+        // Token might be expired - invalidate and retry
+        // TokenManager will handle getting a fresh token on next getAccessToken call
+        if (response.status === 401) {
+          await getTokenManager().invalidateToken('microsoft', this.email, 'Graph API 401 - token expired');
+          const newHeaders = await this.getAuthHeaders();
+          const retryResponse = await fetch(`${GRAPH_API_BASE}${endpoint}`, {
+            ...options,
+            headers: { ...newHeaders, ...options?.headers },
+          });
+          if (retryResponse.ok) {
+            return retryResponse.json();
+          }
+          const retryError = await retryResponse.text();
+          throw new Error(`Graph API error after retry: ${retryResponse.status} - ${retryError}`);
+        }
+        throw new Error(`Graph API error: ${response.status} - ${error}`);
+      }
+
+      return response.json();
+    });
   }
 
   async getProviderInfo(): Promise<ProviderInfo> {

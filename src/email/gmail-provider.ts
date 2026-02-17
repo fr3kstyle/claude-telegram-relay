@@ -6,6 +6,7 @@
  */
 
 import { getTokenManager } from '../auth/token-manager.ts';
+import { circuitBreakers } from '../utils/circuit-breaker.ts';
 import type {
   EmailProvider,
   EmailMessage,
@@ -22,6 +23,14 @@ import type {
 
 const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+
+// Circuit breaker for Gmail API - prevents cascading failures
+const gmailCircuitBreaker = circuitBreakers.get('gmail-api', {
+  failureThreshold: 3,
+  resetTimeout: 60000,
+  onOpen: (name, failures) => console.log(`[CircuitBreaker:${name}] OPEN after ${failures} failures - Gmail API unavailable`),
+  onClose: (name) => console.log(`[CircuitBreaker:${name}] CLOSED - Gmail API recovered`),
+});
 
 // Gmail API types
 interface GmailMessageHeader {
@@ -278,41 +287,43 @@ export class GmailProvider implements EmailProvider {
   }
 
   /**
-   * Make authenticated request to Gmail API
+   * Make authenticated request to Gmail API (with circuit breaker protection)
    */
   private async fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
-    const headers = await this.getAuthHeaders();
-    const response = await fetch(`${GMAIL_API_BASE}${endpoint}`, {
-      ...options,
-      headers: { ...headers, ...options?.headers },
-    });
+    return gmailCircuitBreaker.execute(async () => {
+      const headers = await this.getAuthHeaders();
+      const response = await fetch(`${GMAIL_API_BASE}${endpoint}`, {
+        ...options,
+        headers: { ...headers, ...options?.headers },
+      });
 
-    // Log rate limit headers for observability
-    const rateLimit = response.headers.get('x-ratelimit-limit');
-    const rateRemaining = response.headers.get('x-ratelimit-remaining');
-    if (rateLimit || rateRemaining) {
-      console.log(`[Gmail API] Rate limit: ${rateRemaining}/${rateLimit} remaining`);
-    }
-
-    if (!response.ok) {
-      const error = await response.text();
-      // Token might be expired - invalidate and retry
-      // TokenManager will handle getting a fresh token on next getAccessToken call
-      if (response.status === 401) {
-        await getTokenManager().invalidateToken('google', this.email, 'Gmail API 401 - token expired');
-        const newHeaders = await this.getAuthHeaders();
-        const retryResponse = await fetch(`${GMAIL_API_BASE}${endpoint}`, {
-          ...options,
-          headers: { ...newHeaders, ...options?.headers },
-        });
-        if (retryResponse.ok) {
-          return retryResponse.json();
-        }
+      // Log rate limit headers for observability
+      const rateLimit = response.headers.get('x-ratelimit-limit');
+      const rateRemaining = response.headers.get('x-ratelimit-remaining');
+      if (rateLimit || rateRemaining) {
+        console.log(`[Gmail API] Rate limit: ${rateRemaining}/${rateLimit} remaining`);
       }
-      throw new Error(`Gmail API error: ${response.status} - ${error}`);
-    }
 
-    return response.json();
+      if (!response.ok) {
+        const error = await response.text();
+        // Token might be expired - invalidate and retry
+        // TokenManager will handle getting a fresh token on next getAccessToken call
+        if (response.status === 401) {
+          await getTokenManager().invalidateToken('google', this.email, 'Gmail API 401 - token expired');
+          const newHeaders = await this.getAuthHeaders();
+          const retryResponse = await fetch(`${GMAIL_API_BASE}${endpoint}`, {
+            ...options,
+            headers: { ...newHeaders, ...options?.headers },
+          });
+          if (retryResponse.ok) {
+            return retryResponse.json();
+          }
+        }
+        throw new Error(`Gmail API error: ${response.status} - ${error}`);
+      }
+
+      return response.json();
+    });
   }
 
   async getProviderInfo(): Promise<ProviderInfo> {
