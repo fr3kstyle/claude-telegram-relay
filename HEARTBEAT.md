@@ -34,7 +34,7 @@ Stay silent (HEARTBEAT_OK) when:
 - Outside active hours (11pm-8am)
 - No pending items requiring attention
 
-## Current Status (Updated 2026-02-17 16:00)
+## Current Status (Updated 2026-02-17 16:13 - Cycle 85)
 
 ### Active Goals
 - [P0] Complete OAuth integration hardening (deadline 3/31)
@@ -82,10 +82,13 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 - [x] OAuth scopes and consent flow documentation completed (Cycle 79)
 - [x] OpenAI Whisper fallback for transcription (Cycle 80) - automatic failover when Groq fails
 - [x] OAuth provider RSS feed monitoring script (Cycle 81) - `scripts/check-oauth-feeds.ts`
+- [x] OAuth feed cron job integration (Cycle 85) - declarative cron in HEARTBEAT.md
 
 ### Weekly Reminders
 - [ ] **Monday:** Review @BotNews Telegram channel for Telegram Bot API updates
-- [x] **Weekly:** OAuth Feed Monitor cron job (runs every Monday 9am via scripts/check-oauth-feeds.ts)
+
+## Cron Jobs
+- "0 9 * * 1" Run bun run /home/radxa/claude-telegram-relay/scripts/check-oauth-feeds.ts and report any OAuth provider updates (Google Workspace, Microsoft 365, Microsoft Identity blogs)
 
 ### Enhancement Backlog
 - [x] OAuth provider changelog monitoring (scripts/check-oauth-feeds.ts created Cycle 81)
