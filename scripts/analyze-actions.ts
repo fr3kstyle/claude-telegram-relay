@@ -5,11 +5,14 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY!
 );
 
+const shouldExecute = process.argv.includes('--execute');
+
 async function analyze() {
   const { data } = await supabase
-    .from('global_memory')
+    .from('memory')
     .select('id, content, priority, created_at')
-    .eq('type', 'action');
+    .eq('type', 'action')
+    .eq('status', 'active');
 
   // Find duplicates by prefix
   const byPrefix: Record<string, typeof data> = {};
@@ -53,6 +56,26 @@ async function analyze() {
   console.log(`Duplicates to remove: ${dupCount}`);
   console.log(`Stale to remove: ${stale.length}`);
   console.log(`After cleanup: ${(data?.length || 0) - dupCount - stale.length}`);
+
+  // Execute cleanup if requested
+  if (shouldExecute && (dupIds.length > 0 || staleIds.length > 0)) {
+    const allIds = [...new Set([...dupIds, ...staleIds])];
+    console.log(`\n=== EXECUTING CLEANUP ===`);
+    console.log(`Archiving ${allIds.length} items...`);
+
+    const { error } = await supabase
+      .from('memory')
+      .update({ status: 'archived' })
+      .in('id', allIds);
+
+    if (error) {
+      console.error('Error archiving items:', error);
+    } else {
+      console.log(`Successfully archived ${allIds.length} items`);
+    }
+  } else if (!shouldExecute && (dupIds.length > 0 || staleIds.length > 0)) {
+    console.log('\nRun with --execute to archive these items');
+  }
 }
 
 analyze().catch(console.error);
