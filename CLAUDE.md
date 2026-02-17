@@ -212,3 +212,48 @@ The relay is designed to remain operational even when Supabase (the persistence 
 - Gmail/Outlook APIs: Per-provider circuit breakers with same thresholds
 
 When a circuit is open, users see a clear error message: "Voice transcription temporarily unavailable (Groq API circuit open). Please try again in N seconds."
+
+## Email Module Provider Abstraction
+
+The `/email` command uses a provider abstraction pattern that allows adding new email providers without modifying core relay logic.
+
+**Architecture:**
+```
+src/email/
+├── types.ts           # Provider-agnostic interfaces (EmailProvider, EmailMessage, etc.)
+├── provider-factory.ts # Factory for creating provider instances
+├── gmail-provider.ts  # Gmail-specific implementation
+├── outlook-provider.ts # Outlook/Microsoft-specific implementation
+├── validation.ts      # Input validation and command parsing
+├── email-context.ts   # Context injection for provider instances
+└── index.ts           # Module exports
+```
+
+**Key interfaces (`types.ts`):**
+- `EmailProvider` — Core interface all providers must implement (listMessages, sendMessage, searchMessages, etc.)
+- `ProviderCapabilities` — Feature flags per provider (canSend, supportsThreads, maxAttachmentSize)
+- `EmailMessage` — Normalized message structure (id, subject, from, to, bodyText, labels, flags)
+- `EmailAccountConfig` — Account configuration with provider type and credentials
+
+**Adding a new provider:**
+1. Create `src/email/<provider>-provider.ts` implementing `EmailProvider` interface
+2. Register in `EmailProviderFactory constructor` with capabilities
+3. Add provider type to `EmailProviderType` union in `types.ts`
+4. Implement OAuth flow in `src/auth/` if needed (follow Gmail/Outlook pattern)
+
+**Factory pattern (`provider-factory.ts`):**
+- `EmailProviderFactory.register()` — Registers provider with factory function and capabilities
+- `EmailProviderFactory.getProvider(email)` — Gets or creates provider instance for an account
+- `EmailProviderFactory.getCapabilities(type)` — Returns capability flags for a provider type
+
+**OAuth token normalization:**
+Both Gmail and Outlook tokens are normalized to a common `OAuthToken` interface in `src/auth/token-manager.ts`:
+```typescript
+interface OAuthToken {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  scopes: string[];
+}
+```
+This allows the relay's token refresh logic to work identically for any OAuth provider.
