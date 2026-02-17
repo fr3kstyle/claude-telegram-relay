@@ -34,7 +34,7 @@ Stay silent (HEARTBEAT_OK) when:
 - Outside active hours (11pm-8am)
 - No pending items requiring attention
 
-## Current Status (Updated 2026-02-17 16:38 - Cycle 88)
+## Current Status (Updated 2026-02-17 18:13 - Cycle 102)
 
 ### Active Goals
 - [P0] Complete OAuth integration hardening (deadline 3/31)
@@ -44,11 +44,11 @@ Stay silent (HEARTBEAT_OK) when:
 Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/project/nlkgqooefwbupwubloae/sql/new):
 
 **Completed:**
-- [x] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC (**DEPLOYED** 2026-02-17)
-- [x] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPCs (**DEPLOYED** 2026-02-17, **schema cache needs refresh**)
-  - Fix: Dashboard → Settings → API → "Reload Schema Cache" button
+- [x] `20260216120000_fix_match_memory.sql` - Fix match_memory RPC (**DEPLOYED** 2026-02-16)
 
 **Ready to Apply (Manual):**
+- [ ] `20260216140000_goal_hygiene_rpc.sql` - Goal hygiene RPCs (**NOT DEPLOYED** - was incorrectly marked as done)
+  - Creates: goal_hygiene, archive_stale_items, delete_malformed_entries, merge_duplicate_goals
 - [ ] `20260217020000_email_stats_rpc.sql` - Email stats RPCs (dependencies confirmed: email_accounts=3, email_messages=87)
   - **Apply via:** https://supabase.com/dashboard/project/nlkgqooefwbupwubloae/sql/new
   - Paste contents of `supabase/migrations/20260217020000_email_stats_rpc.sql` and click Run
@@ -64,9 +64,9 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 - [ ] `20260217133000_rls_audit_fix.sql` - RLS policies (depends on above)
 
 ### System Resources
-- System has 3.8GB RAM, ~1.8GB available
-- All PM2 services online (12 services, 681MB total)
-- Trading scanners running: top10, top20, top50 (combined ~185MB)
+- System has 3.8GB RAM, ~1.9GB available (healthy)
+- All PM2 services online (12 services, ~631MB total)
+- Trading scanners running: top10, top20, top50 (combined ~182MB)
 
 ### Trading Scanner Resource Analysis (Updated 2026-02-17 Cycle 78)
 | Scanner | Memory | Status |
@@ -77,6 +77,13 @@ Run these in Supabase Dashboard SQL Editor (https://supabase.com/dashboard/proje
 | **Total PM2** | **681MB** | All 12 services online |
 
 ### Recent Completions
+- [x] **Cycle 102 (this):** System health check - all 12 PM2 services online, 1.6GB RAM available, 38% disk usage. Setup verification passed (10 passed, 1 warning for GEMINI_API_KEY - expected since we use GROQ). Scanners running (0 signals - all below 75% threshold). No actionable items - Outlook OAuth blocked on Azure credentials, migrations require manual dashboard access. One unpushed commit: f92b2d7 (goal-engine global_memory fix).
+- [x] **Cycle 102 (earlier):** System health check - all 12 PM2 services online, 1.9GB RAM available, 38% disk usage. Memory table has 303 entries (101 strategies, 125 reflections, 44 facts, 14 goals). Relay lock file verified correct (PID 55408).
+- [x] **Cycle 99:** System health check - all 12 PM2 services online, 1.9GB RAM available, 38% disk usage. Transient API error (exit code 1) occurred but self-healing retry succeeded. Scanners running (0 signals - all below 75% threshold). deep-think/goal-engine idling (1 goal < 2 threshold).
+- [x] **Cycle 97:** System health check - all 12 PM2 services online, 1.5GB RAM available, 38% disk usage. No actionable items - Outlook OAuth blocked on Azure credentials, migrations require manual dashboard access.
+- [x] **Cycle 96:** System health check - all 12 PM2 services online, 475MB RAM available, 38% disk usage. Scanners running (0 signals - all below 75% threshold). deep-think/goal-engine idling (1 goal < 2 threshold).
+- [x] **Cycle 95:** System health check - all 12 PM2 services online, 1.9GB RAM available, 38% disk usage
+- [x] **Cycle 93:** Fixed PROJECT_DIR in .env (was `/home/radxa/`, now `/home/radxa/claude-telegram-relay`) - heartbeat was failing to find HEARTBEAT.md
 - [x] Security: Added trading-status.ts to .gitignore (contained embedded credentials - never committed)
 - [x] Security (Cycle 88): Found and deleted add-pairs.ts with embedded Bybit credentials - expanded .gitignore patterns
 - [x] Scanner config update (Cycle 88): Committed base-scanner.ts changes with volatile pairs and 75% thresholds
