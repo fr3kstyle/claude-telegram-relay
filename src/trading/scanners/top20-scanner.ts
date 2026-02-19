@@ -18,7 +18,7 @@ class Top20Scanner extends BaseScanner {
       tier: 'top20',
       symbols: ['ORCAUSDT', 'IRYSUSDT', 'USELESSUSDT', 'OGNUSDT', 'FHEUSDT', 'JELLYJELLYUSDT', 'XNYUSDT'],
       intervalSeconds: 120,
-      confidenceThreshold: 75,
+      confidenceThreshold: 70,
     });
   }
 

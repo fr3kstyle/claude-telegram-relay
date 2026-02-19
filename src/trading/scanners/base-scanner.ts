@@ -434,19 +434,19 @@ export async function getScannerConfig(tier: ScannerTier): Promise<ScannerConfig
       tier: 'top10',
       symbols: ['RPLUSDT', 'INITUSDT', 'POWERUSDT', 'SPACEUSDT', 'ARIAUSDT'],
       intervalSeconds: 60,
-      confidenceThreshold: 75, // Lowered from 78
+      confidenceThreshold: 70,
     },
     top20: {
       tier: 'top20',
       symbols: ['ORCAUSDT', 'IRYSUSDT', 'USELESSUSDT', 'OGNUSDT', 'FHEUSDT', 'JELLYJELLYUSDT', 'XNYUSDT'],
       intervalSeconds: 120,
-      confidenceThreshold: 75, // Lowered from 80
+      confidenceThreshold: 70,
     },
     top50: {
       tier: 'top50',
       symbols: ['MOODENGUSDT', 'FIGHTUSDT', 'DEEPUSDT', 'MAGICUSDT', 'TRIAUSDT', 'CLOUSDT', 'MERLUSDT', 'ESPUSDT', 'TNSRUSDT', 'UMAUSDT'],
-      intervalSeconds: 300, // Faster from 600
-      confidenceThreshold: 75, // Lowered from 82
+      intervalSeconds: 300,
+      confidenceThreshold: 70,
     },
   };
 

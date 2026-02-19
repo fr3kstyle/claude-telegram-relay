@@ -36,6 +36,10 @@ const BASE_URL = BYBIT_TESTNET
   ? "https://api-testnet.bybit.com"
   : "https://api.bybit.com";
 
+// Track auth failures to enable graceful degradation
+let authFailureCount = 0;
+const AUTH_FAILURE_THRESHOLD = 3;
+
 // ============================================================
 // Trade Executor Class
 // ============================================================
@@ -172,6 +176,11 @@ export class TradeExecutor {
     try {
       const response = await this.signedRequest('POST', endpoint, body);
 
+      if (!response) {
+        console.error('[Executor] Order error: no response (network error)');
+        return null;
+      }
+
       if (response.retCode !== 0) {
         console.error('[Executor] Order error:', response.retMsg);
         return null;
@@ -210,6 +219,11 @@ export class TradeExecutor {
 
     try {
       const response = await this.signedRequest('POST', endpoint, body);
+
+      if (!response) {
+        console.error('[Executor] Set leverage error: no response (network error)');
+        return false;
+      }
 
       if (response.retCode !== 0 && !response.retMsg.includes('same')) {
         console.error('[Executor] Set leverage error:', response.retMsg);
@@ -255,6 +269,11 @@ export class TradeExecutor {
     try {
       const response = await this.signedRequest('POST', endpoint, body);
 
+      if (!response) {
+        console.error('[Executor] Trailing stop error: no response (network error)');
+        return false;
+      }
+
       if (response.retCode !== 0) {
         console.error('[Executor] Trailing stop error:', response.retMsg);
         return false;
@@ -291,6 +310,11 @@ export class TradeExecutor {
 
     try {
       const response = await this.signedRequest('POST', endpoint, body);
+
+      if (!response) {
+        console.error('[Executor] Stop loss error: no response (network error)');
+        return false;
+      }
 
       if (response.retCode !== 0) {
         console.error('[Executor] Stop loss error:', response.retMsg);
@@ -329,6 +353,11 @@ export class TradeExecutor {
     try {
       const response = await this.signedRequest('POST', endpoint, body);
 
+      if (!response) {
+        console.error('[Executor] Close position error: no response (network error)');
+        return false;
+      }
+
       if (response.retCode !== 0) {
         console.error('[Executor] Close position error:', response.retMsg);
         return false;
@@ -347,21 +376,26 @@ export class TradeExecutor {
    */
   async getPositions(symbol?: string): Promise<ExchangePosition[]> {
     const endpoint = '/v5/position/list';
-    const params = new URLSearchParams({ category: 'linear' });
+    const params: Record<string, string> = { category: 'linear' };
 
     if (symbol) {
-      params.append('symbol', symbol);
+      params.symbol = symbol;
     }
 
     try {
-      const response = await this.signedRequest('GET', `${endpoint}?${params}`, null, true);
+      const response = await this.signedRequest('GET', endpoint, params, true);
+
+      if (!response) {
+        console.error('[Executor] Get positions: no response (network error)');
+        return [];
+      }
 
       if (response.retCode !== 0) {
         console.error('[Executor] Get positions error:', response.retMsg);
         return [];
       }
 
-      return (response.result.list || []).map((p: any) => ({
+      return (response.result?.list || []).map((p: any) => ({
         symbol: p.symbol,
         side: p.side.toLowerCase() as PositionSide,
         size: parseFloat(p.size),
@@ -383,10 +417,15 @@ export class TradeExecutor {
    */
   async getBalance(): Promise<{ currency: string; total: number; free: number }[]> {
     const endpoint = '/v5/account/wallet-balance';
-    const params = 'accountType=UNIFIED';
+    const params = { accountType: 'UNIFIED' };
 
     try {
-      const response = await this.signedRequest('GET', `${endpoint}?${params}`, null, true);
+      const response = await this.signedRequest('GET', endpoint, params, true);
+
+      if (!response) {
+        console.error('[Executor] Get balance: no response (network error)');
+        return [];
+      }
 
       if (response.retCode !== 0) {
         console.error('[Executor] Get balance error:', response.retMsg);
@@ -550,16 +589,18 @@ export class TradeExecutor {
 
     if (isQuery || method === 'GET') {
       if (body) {
-        queryString = endpoint.includes('?') ? '' : '?';
-        const params = Object.entries(body)
+        // Sort params alphabetically for correct signature
+        const sortedParams = Object.entries(body)
+          .sort(([a], [b]) => a.localeCompare(b))
           .map(([k, v]) => `${k}=${v}`)
           .join('&');
-        queryString = endpoint.includes('?') ? params : `?${params}`;
+        queryString = endpoint.includes('?') ? `&${sortedParams}` : `?${sortedParams}`;
       }
     } else {
       requestBody = JSON.stringify(body);
     }
 
+    // Sign string format: timestamp + apiKey + recvWindow + queryString (without ?)
     const signString = timestamp + this.apiKey + recvWindow + (requestBody || queryString.replace('?', ''));
 
     // Generate signature using Web Crypto API
@@ -590,13 +631,29 @@ export class TradeExecutor {
 
     const url = this.baseUrl + endpoint + queryString;
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: method === 'POST' ? requestBody : undefined,
-    });
+    try {
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: method === 'POST' ? requestBody : undefined,
+      });
 
-    return response.json();
+      if (!response.ok) {
+        console.error(`[Executor] API error: ${response.status} ${response.statusText}`);
+        // Track auth failures
+        if (response.status === 401 || response.status === 403) {
+          authFailureCount++;
+          console.error(`[Executor] Auth failure #${authFailureCount}`);
+        }
+        return null;
+      }
+
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('[Executor] Request failed:', error);
+      return null;
+    }
   }
 }
 
@@ -628,13 +685,30 @@ async function main() {
 
   const executor = new TradeExecutor();
 
-  // Check balance
+  // Check balance - if this fails with auth error, idle instead of crashing
   const balance = await executor.getBalance();
   console.log('[Executor] Balance:', balance);
 
   // Get positions
   const positions = await executor.getPositions();
   console.log('[Executor] Positions:', positions);
+
+  // Check if we hit auth failures - if so, idle to avoid restart loop
+  if (authFailureCount > 0) {
+    console.log('[Executor] Auth failures detected - credentials may be invalid');
+    console.log('[Executor] Idling to avoid restart loop...');
+    setInterval(() => {
+      console.log('[Executor] Idle - waiting for valid Bybit credentials');
+    }, 300000);
+    return;
+  }
+
+  // If we got here with no auth failures but no balance, still idle to stay alive
+  // This handles the case where API returns empty but no error
+  setInterval(() => {
+    // Heartbeat every 5 minutes to show we're alive
+    console.log('[Executor] Running - monitoring for signals');
+  }, 300000);
 }
 
 if (import.meta.main) {

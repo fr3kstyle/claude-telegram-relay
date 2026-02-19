@@ -20,7 +20,7 @@ class Top50Scanner extends BaseScanner {
       tier: 'top50',
       symbols: ['MOODENGUSDT', 'FIGHTUSDT', 'DEEPUSDT', 'MAGICUSDT', 'TRIAUSDT', 'CLOUSDT', 'MERLUSDT', 'ESPUSDT', 'TNSRUSDT', 'UMAUSDT'],
       intervalSeconds: 300,
-      confidenceThreshold: 75,
+      confidenceThreshold: 70,
     });
   }
 
