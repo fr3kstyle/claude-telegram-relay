@@ -34,6 +34,10 @@ const PENDING_MIGRATIONS = [
   '20260217200000_trading_risk.sql',
   '20260217210000_trading_ml.sql',
   '20260217220000_trading_system.sql',
+  // Trade journal for learning
+  '20260219100000_trade_journal.sql',
+  // Paper trading
+  '20260219110000_paper_trading.sql',
 ];
 
 async function checkTableExists(tableName: string): Promise<boolean> {

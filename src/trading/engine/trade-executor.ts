@@ -68,8 +68,12 @@ export class TradeExecutor {
     );
 
     try {
-      // Set leverage first
-      await this.setLeverage(signal.symbol, leverage);
+      // Set leverage first, get actual leverage used
+      const actualLeverage = await this.setLeverage(signal.symbol, leverage);
+      if (actualLeverage === 0) {
+        console.error('[Executor] Could not set any leverage, aborting');
+        return null;
+      }
 
       // Place market order
       const order = await this.placeOrder({
@@ -95,8 +99,8 @@ export class TradeExecutor {
         orderType: 'market',
         positionSizeUsd,
         positionSizeCoin: positionSizeUsd / signal.entryPrice,
-        leverage,
-        marginUsed: positionSizeUsd / leverage,
+        leverage: actualLeverage,
+        marginUsed: positionSizeUsd / actualLeverage,
         notionalValue: positionSizeUsd,
         entryPrice: order.avgPrice || signal.entryPrice,
         stopLossPrice: signal.stopLoss,
@@ -117,13 +121,14 @@ export class TradeExecutor {
       // Save to database
       const savedExecution = await this.saveExecution(execution);
 
-      // Set stop loss and take profit
-      if (signal.stopLoss) {
-        await this.setStopLoss(
+      // Set stop loss, take profit, and trailing stop via trading-stop
+      if (signal.stopLoss || signal.takeProfit1) {
+        await this.setTradingStop(
           signal.symbol,
           signal.signalType,
           signal.stopLoss,
-          execution.positionSizeCoin
+          signal.takeProfit1,
+          execution.entryPrice // For trailing stop activation
         );
       }
 
@@ -155,11 +160,13 @@ export class TradeExecutor {
     const body: Record<string, any> = {
       category: 'linear',
       symbol: params.symbol,
-      side: params.side.toUpperCase(),
-      orderType: params.orderType.toUpperCase(),
-      qty: params.qty.toFixed(6),
+      side: params.side.charAt(0).toUpperCase() + params.side.slice(1).toLowerCase(),
+      orderType: 'Market',
+      qty: Math.floor(params.qty).toString(), // Integer qty for most contracts
       positionIdx: params.positionSide === 'short' ? 2 : 0,
     };
+
+    console.log(`[Executor] Order body: ${JSON.stringify(body)}`);
 
     if (params.price) {
       body.price = params.price.toFixed(2);
@@ -205,36 +212,49 @@ export class TradeExecutor {
   }
 
   /**
-   * Set leverage for symbol
+   * Set leverage for symbol - tries requested, falls back to max available
    */
-  async setLeverage(symbol: string, leverage: number): Promise<boolean> {
+  async setLeverage(symbol: string, leverage: number): Promise<number> {
     const endpoint = '/v5/position/set-leverage';
 
-    const body = {
-      category: 'linear',
-      symbol,
-      buyLeverage: leverage.toString(),
-      sellLeverage: leverage.toString(),
+    const tryLeverage = async (lev: number): Promise<{ success: boolean; msg: string }> => {
+      const body = {
+        category: 'linear',
+        symbol,
+        buyLeverage: lev.toString(),
+        sellLeverage: lev.toString(),
+      };
+      const response = await this.signedRequest('POST', endpoint, body);
+      if (!response) return { success: false, msg: 'no response' };
+      if (response.retCode === 0 || response.retMsg.includes('same')) return { success: true, msg: 'OK' };
+      return { success: false, msg: response.retMsg };
     };
 
     try {
-      const response = await this.signedRequest('POST', endpoint, body);
-
-      if (!response) {
-        console.error('[Executor] Set leverage error: no response (network error)');
-        return false;
+      // Try requested leverage first
+      let result = await tryLeverage(leverage);
+      if (result.success) {
+        console.log(`[Executor] Leverage set to ${leverage}x for ${symbol}`);
+        return leverage;
       }
 
-      if (response.retCode !== 0 && !response.retMsg.includes('same')) {
-        console.error('[Executor] Set leverage error:', response.retMsg);
-        return false;
+      // If leverage too high, try lower values
+      console.log(`[Executor] Leverage ${leverage}x failed: ${result.msg}, trying lower...`);
+      const fallbacks = [25, 20, 15, 12, 10];
+      for (const lev of fallbacks) {
+        if (lev >= leverage) continue;
+        result = await tryLeverage(lev);
+        if (result.success) {
+          console.log(`[Executor] Leverage set to ${lev}x for ${symbol} (fallback)`);
+          return lev;
+        }
       }
 
-      console.log(`[Executor] Leverage set to ${leverage}x for ${symbol}`);
-      return true;
+      console.error(`[Executor] All leverage attempts failed for ${symbol}`);
+      return 0;
     } catch (error) {
       console.error('[Executor] Exception setting leverage:', error);
-      return false;
+      return 0;
     }
   }
 
@@ -330,6 +350,64 @@ export class TradeExecutor {
   }
 
   /**
+   * Set trading stop (SL, TP, trailing stop) via single API call
+   */
+  async setTradingStop(
+    symbol: string,
+    positionSide: 'long' | 'short',
+    stopLoss?: number,
+    takeProfit?: number,
+    entryPrice?: number
+  ): Promise<boolean> {
+    const endpoint = '/v5/position/trading-stop';
+
+    const body: Record<string, any> = {
+      category: 'linear',
+      symbol,
+      positionIdx: positionSide === 'short' ? 2 : 0,
+    };
+
+    if (stopLoss) {
+      body.stopLoss = stopLoss.toFixed(4);
+    }
+
+    if (takeProfit) {
+      body.takeProfit = takeProfit.toFixed(4);
+    }
+
+    // Trailing stop: 1.5% distance, activated when price moves 1% in profit
+    if (entryPrice) {
+      const trailDistance = entryPrice * 0.015; // 1.5% trail distance
+      const activationPrice = positionSide === 'long'
+        ? entryPrice * 1.01  // Activate when 1% up
+        : entryPrice * 0.99; // Activate when 1% down
+
+      body.trailingStop = trailDistance.toFixed(4);
+      body.activePrice = activationPrice.toFixed(4);
+    }
+
+    try {
+      const response = await this.signedRequest('POST', endpoint, body);
+
+      if (!response) {
+        console.error('[Executor] Trading stop error: no response');
+        return false;
+      }
+
+      if (response.retCode !== 0 && !response.retMsg.includes('unchanged')) {
+        console.error('[Executor] Trading stop error:', response.retMsg);
+        return false;
+      }
+
+      console.log(`[Executor] Trading stop set for ${symbol}: SL=${stopLoss}, TP=${takeProfit}, Trail=1.5% @ ${body.activePrice}`);
+      return true;
+    } catch (error) {
+      console.error('[Executor] Exception setting trading stop:', error);
+      return false;
+    }
+  }
+
+  /**
    * Close a position
    */
   async closePosition(
@@ -376,7 +454,10 @@ export class TradeExecutor {
    */
   async getPositions(symbol?: string): Promise<ExchangePosition[]> {
     const endpoint = '/v5/position/list';
-    const params: Record<string, string> = { category: 'linear' };
+    const params: Record<string, string> = {
+      category: 'linear',
+      settleCoin: 'USDT', // Required when not specifying symbol
+    };
 
     if (symbol) {
       params.symbol = symbol;
@@ -392,6 +473,13 @@ export class TradeExecutor {
 
       if (response.retCode !== 0) {
         console.error('[Executor] Get positions error:', response.retMsg);
+        // Track signature/auth failures for graceful degradation
+        if (response.retMsg?.toLowerCase().includes('sign') ||
+            response.retMsg?.toLowerCase().includes('auth') ||
+            response.retMsg?.toLowerCase().includes('key')) {
+          authFailureCount++;
+          console.error(`[Executor] Auth/signature failure #${authFailureCount}`);
+        }
         return [];
       }
 
@@ -413,6 +501,67 @@ export class TradeExecutor {
   }
 
   /**
+   * Check market direction using EMAs - only trade with the trend
+   * Returns true if signal direction matches market trend
+   */
+  async checkMarketDirection(symbol: string, signalType: string): Promise<boolean> {
+    const endpoint = '/v5/market/kline';
+    const params = {
+      category: 'linear',
+      symbol,
+      interval: '60', // 1 hour candles
+      limit: '50', // Enough for EMA calculation
+    };
+
+    try {
+      const response = await fetch(`${this.baseUrl}${endpoint}?${new URLSearchParams(params)}`);
+      const data = await response.json();
+
+      if (data.retCode !== 0 || !data.result?.list) {
+        console.log(`[Executor] Could not fetch klines for ${symbol}, allowing trade`);
+        return true; // Allow if we can't check
+      }
+
+      // Parse closes (newest first in Bybit)
+      const closes = data.result.list.map((c: string[]) => parseFloat(c[4])).reverse();
+
+      if (closes.length < 50) {
+        return true; // Not enough data, allow
+      }
+
+      // Calculate EMAs
+      const ema20 = this.calculateEMA(closes, 20);
+      const ema50 = this.calculateEMA(closes, 50);
+
+      const trend = ema20 > ema50 ? 'bullish' : 'bearish';
+      console.log(`[Executor] ${symbol} trend: ${trend} (EMA20: ${ema20.toFixed(4)}, EMA50: ${ema50.toFixed(4)})`);
+
+      // Only allow long in bullish, short in bearish
+      if (signalType === 'long' && trend === 'bullish') return true;
+      if (signalType === 'short' && trend === 'bearish') return true;
+
+      return false;
+    } catch (error) {
+      console.error('[Executor] Error checking market direction:', error);
+      return true; // Allow on error
+    }
+  }
+
+  /**
+   * Calculate EMA for trend detection
+   */
+  private calculateEMA(prices: number[], period: number): number {
+    const multiplier = 2 / (period + 1);
+    let ema = prices.slice(0, period).reduce((a, b) => a + b) / period; // SMA seed
+
+    for (let i = period; i < prices.length; i++) {
+      ema = (prices[i] - ema) * multiplier + ema;
+    }
+
+    return ema;
+  }
+
+  /**
    * Get account balance
    */
   async getBalance(): Promise<{ currency: string; total: number; free: number }[]> {
@@ -429,6 +578,13 @@ export class TradeExecutor {
 
       if (response.retCode !== 0) {
         console.error('[Executor] Get balance error:', response.retMsg);
+        // Track signature/auth failures for graceful degradation
+        if (response.retMsg?.toLowerCase().includes('sign') ||
+            response.retMsg?.toLowerCase().includes('auth') ||
+            response.retMsg?.toLowerCase().includes('key')) {
+          authFailureCount++;
+          console.error(`[Executor] Auth/signature failure #${authFailureCount}`);
+        }
         return [];
       }
 
@@ -436,9 +592,9 @@ export class TradeExecutor {
 
       return coins.map((c: any) => ({
         currency: c.coin,
-        total: parseFloat(c.walletBalance),
-        free: parseFloat(c.availableToWithdraw),
-      }));
+        total: parseFloat(c.walletBalance) || 0,
+        free: parseFloat(c.availableToWithdraw) || parseFloat(c.transferableAmount) || 0,
+      })).filter((c: any) => c.total > 0 || c.free > 0);
     } catch (error) {
       console.error('[Executor] Exception getting balance:', error);
       return [];
@@ -602,6 +758,7 @@ export class TradeExecutor {
 
     // Sign string format: timestamp + apiKey + recvWindow + queryString (without ?)
     const signString = timestamp + this.apiKey + recvWindow + (requestBody || queryString.replace('?', ''));
+    console.log('[Executor] Sign string:', signString.substring(0, 50) + '...');
 
     // Generate signature using Web Crypto API
     const encoder = new TextEncoder();
@@ -694,7 +851,8 @@ async function main() {
   console.log('[Executor] Positions:', positions);
 
   // Check if we hit auth failures - if so, idle to avoid restart loop
-  if (authFailureCount > 0) {
+  // Use threshold of 1 on startup to catch immediate signature errors
+  if (authFailureCount >= AUTH_FAILURE_THRESHOLD) {
     console.log('[Executor] Auth failures detected - credentials may be invalid');
     console.log('[Executor] Idling to avoid restart loop...');
     setInterval(() => {
@@ -703,12 +861,138 @@ async function main() {
     return;
   }
 
-  // If we got here with no auth failures but no balance, still idle to stay alive
-  // This handles the case where API returns empty but no error
-  setInterval(() => {
-    // Heartbeat every 5 minutes to show we're alive
-    console.log('[Executor] Running - monitoring for signals');
-  }, 300000);
+  // Even with only 1-2 failures, if both balance and positions failed, idle
+  if (authFailureCount > 0 && balance.length === 0) {
+    console.log('[Executor] API calls returning errors with no data - likely credential issue');
+    console.log('[Executor] Idling to avoid restart loop...');
+    setInterval(() => {
+      console.log('[Executor] Idle - waiting for valid Bybit credentials');
+    }, 300000);
+    return;
+  }
+
+  // Poll for pending signals and execute
+  console.log('[Executor] Starting signal monitor...');
+
+  async function pollAndExecute() {
+    try {
+      // Only get PENDING signals (not approved - those are already being processed)
+      const { data: signals, error } = await supabase
+        .from('trading_signals')
+        .select('*')
+        .eq('status', 'pending')
+        .gt('expires_at', new Date().toISOString())
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (error) {
+        console.error('[Executor] Error fetching signals:', error.message);
+        return;
+      }
+
+      if (!signals || signals.length === 0) {
+        return;
+      }
+
+      const s = signals[0];
+      console.log(`[Executor] Found signal: ${s.symbol} ${s.signal_type} @ ${s.entry_price} (${s.confidence.toFixed(1)}%)`);
+
+      // Check if we already have an open position for this symbol
+      const existingPositions = await executor.getPositions(s.symbol);
+      const hasOpenPosition = existingPositions.some(p => p.size > 0);
+      if (hasOpenPosition) {
+        console.log(`[Executor] Skipping ${s.symbol} - already have open position`);
+        await supabase
+          .from('trading_signals')
+          .update({ status: 'rejected' })
+          .eq('id', s.id);
+        return;
+      }
+
+      // Check market direction - only trade with the trend
+      const directionOk = await executor.checkMarketDirection(s.symbol, s.signal_type);
+      if (!directionOk) {
+        console.log(`[Executor] Skipping ${s.symbol} - against market trend`);
+        await supabase
+          .from('trading_signals')
+          .update({ status: 'rejected' })
+          .eq('id', s.id);
+        return;
+      }
+
+      // Mark as approved to prevent re-execution
+      await supabase
+        .from('trading_signals')
+        .update({ status: 'approved' })
+        .eq('id', s.id);
+
+      // Build TradingSignal object
+      const signal: TradingSignal = {
+        id: s.id,
+        symbol: s.symbol,
+        signalType: s.signal_type,
+        confidence: s.confidence,
+        signalStrength: s.signal_strength,
+        entryPrice: s.entry_price,
+        stopLoss: s.stop_loss,
+        takeProfit1: s.take_profit_1,
+        takeProfit2: s.take_profit_2,
+        takeProfit3: s.take_profit_3,
+        riskRewardRatio: s.risk_reward_ratio,
+        layerScores: {
+          technical: s.layer_technical,
+          orderflow: s.layer_orderflow,
+          liquidation: s.layer_liquidation,
+          sentiment: s.layer_sentiment,
+          aiMl: s.layer_ai_ml,
+          cosmic: s.layer_cosmic,
+        },
+        layerWeights: {
+          technical: s.weight_technical,
+          orderflow: s.weight_orderflow,
+          liquidation: s.weight_liquidation,
+          sentiment: s.weight_sentiment,
+          aiMl: s.weight_ai_ml,
+          cosmic: s.weight_cosmic,
+        },
+        layerReasons: {
+          technical: s.technical_reason,
+          orderflow: s.orderflow_reason,
+          liquidation: s.liquidation_reason,
+          sentiment: s.sentiment_reason,
+          aiMl: s.ai_ml_reason,
+          cosmic: s.cosmic_reason,
+        },
+        scannerTier: s.scanner_tier,
+        scannerIntervalSeconds: s.scanner_interval_seconds,
+        status: 'approved',
+        createdAt: new Date(s.created_at),
+        expiresAt: new Date(s.expires_at),
+      };
+
+      const execution = await executor.executeSignal(signal, 30, 10); // 30x leverage (or max available), $10 min
+      if (execution) {
+        console.log(`[Executor] Trade executed: ${execution.symbol} ${execution.side}`);
+        await supabase
+          .from('trading_signals')
+          .update({ status: 'executed', executed_at: new Date().toISOString() })
+          .eq('id', s.id);
+      } else {
+        // Mark as failed to stop retry loop
+        console.log(`[Executor] Signal execution failed, marking as rejected`);
+        await supabase
+          .from('trading_signals')
+          .update({ status: 'rejected' })
+          .eq('id', s.id);
+      }
+    } catch (err) {
+      console.error('[Executor] Signal poll error:', err);
+    }
+  }
+
+  // Poll every 10 seconds
+  setInterval(pollAndExecute, 10000);
+  console.log('[Executor] Monitoring for signals every 10s...');
 }
 
 if (import.meta.main) {
